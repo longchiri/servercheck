@@ -1,0 +1,121 @@
+name: Build Server Check
+
+# 언제 실행할지: push 또는 수동 트리거 또는 태그
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:  # GitHub 웹에서 "Run workflow" 버튼으로 수동 실행
+
+jobs:
+  # ============================================================
+  # macOS 빌드
+  # ============================================================
+  build-mac:
+    name: macOS .app 빌드
+    runs-on: macos-latest
+    steps:
+      - name: 코드 받기
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 의존 패키지 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install PySide6 requests openpyxl pyinstaller
+
+      - name: PyInstaller 로 .app 빌드
+        run: |
+          pyinstaller \
+            --windowed \
+            --noconfirm \
+            --clean \
+            --name "Server Check" \
+            --osx-bundle-identifier "com.longchiri.serverCheck" \
+            --icon iDRAC_Viewer.icns \
+            --add-data "iDRAC_Viewer.icns:." \
+            --add-data "iDRAC_Viewer.png:." \
+            --add-data "iDRAC_Viewer.ico:." \
+            dell_viewer.py
+
+      - name: .app 을 zip 으로 압축
+        run: |
+          cd dist
+          zip -r "Server_Check_macOS.zip" "Server Check.app"
+          ls -lh
+
+      - name: macOS artifact 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: Server_Check_macOS
+          path: dist/Server_Check_macOS.zip
+          retention-days: 30
+
+  # ============================================================
+  # Windows 빌드
+  # ============================================================
+  build-windows:
+    name: Windows .exe 빌드
+    runs-on: windows-latest
+    steps:
+      - name: 코드 받기
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 의존 패키지 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install PySide6 requests openpyxl pyinstaller
+
+      - name: PyInstaller 로 .exe 빌드
+        run: |
+          pyinstaller `
+            --windowed `
+            --onefile `
+            --noconfirm `
+            --clean `
+            --name "Server_Check" `
+            --icon iDRAC_Viewer.ico `
+            --add-data "iDRAC_Viewer.ico;." `
+            --add-data "iDRAC_Viewer.png;." `
+            --add-data "iDRAC_Viewer.icns;." `
+            dell_viewer.py
+
+      - name: Windows artifact 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: Server_Check_Windows
+          path: dist/Server_Check.exe
+          retention-days: 30
+
+  # ============================================================
+  # (선택) 태그 푸시 시 Release 자동 생성
+  # ============================================================
+  release:
+    name: Release 자동 생성
+    needs: [build-mac, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: 모든 artifact 다운로드
+        uses: actions/download-artifact@v4
+
+      - name: Release 생성 및 파일 첨부
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Server_Check_macOS/Server_Check_macOS.zip
+            Server_Check_Windows/Server_Check.exe
+          generate_release_notes: true

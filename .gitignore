@@ -1,0 +1,41 @@
+# 파이썬
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py[cod]
+
+# 가상환경
+.venv/
+.venv_qt/
+.venv_qt_win/
+venv/
+env/
+
+# PyInstaller
+build/
+dist/
+dist_win/
+*.spec
+
+# macOS
+.DS_Store
+*.swp
+
+# IDE
+.vscode/
+.idea/
+
+# 로그
+*.log
+
+# 옛 파일들 (보존하고 싶지 않은 것)
+dell_app.py
+build_mac_app.sh
+"Dell관리시스템.spec"
+"Dell관리시스템 2.spec"
+"iDRAC Viewer.spec"
+"Server Check.spec"
+"DellTSRAnalyzer.app/"
+"DellTSRAnalyzer 2.app/"
+DellTSRAnalyzer*.zip
