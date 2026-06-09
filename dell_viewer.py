@@ -830,10 +830,7 @@ def format_fw_html(data: dict, show_all: bool = False, key_filter: Optional[List
         if comps:
             out += '<div style="margin:0 0 0 8px; color:#444; line-height:1.7;">'
             for c in comps:
-                upd = c.get("Updateable", "N/A")
-                upd_html = (f' <span style="color:#1a7f37; font-size:11px;">[업데이트 가능]</span>'
-                            if upd is True else '')
-                out += f'• {html.escape(c["Name"])} — <b>{html.escape(c["Version"])}</b>{upd_html}<br>'
+                out += f'• {html.escape(c["Name"])} — <b>{html.escape(c["Version"])}</b><br>'
             out += '</div>'
         else:
             out += '<div style="color:#999; margin-left:8px;">(매칭되는 컴포넌트 없음)</div>'
@@ -990,8 +987,7 @@ def format_fw_text(data: dict, show_all: bool = False, key_filter: Optional[List
         else:
             L += ["", sep, f"Firmware - 전체 ({len(comps)}개)".center(60), sep]
         for c in comps:
-            upd = "  [Update]" if c.get("Updateable") is True else ""
-            L.append(f" {c['Name'][:38]:38} {c['Version']}{upd}")
+            L.append(f" {c['Name'][:38]:38} {c['Version']}")
     else:
         comps = data.get("components", [])
         if key_filter:
@@ -1064,6 +1060,250 @@ XLSX_COLOR_META_BG     = "EEEEEE"  # 메타 라벨 회색
 XLSX_COLOR_WHITE       = "FFFFFF"
 XLSX_COLOR_BLUE_TEXT   = "0E639C"
 XLSX_COLOR_DARK_TEXT   = "333333"
+
+
+def save_combined_xlsx(path: str, service_tag: str, payloads: dict,
+                       ip: str = "", options_str: str = "", timestamp: str = "") -> str:
+    """HW + FW + BIOS 를 한 시트에 통합 저장.
+       payloads = {'hw': {...}, 'fw': {...}, 'bios': {...}} 중 있는 것만 차례로.
+       시트명: ServiceTag (중복 시 _2, _3 ...)
+       반환: 사용된 시트 이름.
+    """
+    from openpyxl import Workbook, load_workbook
+    from openpyxl.styles import Font, Alignment, PatternFill
+
+    if os.path.exists(path):
+        wb = load_workbook(path)
+    else:
+        wb = Workbook()
+        if "Sheet" in wb.sheetnames:
+            del wb["Sheet"]
+
+    # 시트명: 그냥 ServiceTag, 충돌시 _2, _3 ...
+    base = (service_tag or "Server")[:28]
+    name = base
+    i = 2
+    while name in wb.sheetnames:
+        name = f"{base}_{i}"[:31]
+        i += 1
+    ws = wb.create_sheet(name)
+
+    # 컬럼 너비
+    ws.column_dimensions["A"].width = 32
+    ws.column_dimensions["B"].width = 50
+    ws.column_dimensions["C"].width = 20
+    ws.column_dimensions["D"].width = 20
+
+    # 스타일 정의
+    F_MAIN     = Font(bold=True, color=XLSX_COLOR_WHITE, size=12)
+    F_SECTION  = Font(bold=True, color=XLSX_COLOR_WHITE, size=12)
+    F_SUBSEC   = Font(bold=True, color=XLSX_COLOR_BLUE_TEXT, size=11)
+    F_LABEL    = Font(bold=True, color=XLSX_COLOR_DARK_TEXT)
+    F_VAL      = Font(color=XLSX_COLOR_DARK_TEXT)
+    F_BULLET   = Font(color=XLSX_COLOR_DARK_TEXT)
+    P_MAIN     = PatternFill("solid", fgColor=XLSX_COLOR_MAIN_BG)
+    P_SECTION  = PatternFill("solid", fgColor=XLSX_COLOR_SECTION_BG)
+    P_SUBSEC   = PatternFill("solid", fgColor=XLSX_COLOR_SUBSEC_BG)
+    P_META     = PatternFill("solid", fgColor=XLSX_COLOR_META_BG)
+    A_LEFT     = Alignment(horizontal="left", vertical="center", indent=1)
+    A_LEFT_PLAIN = Alignment(horizontal="left", vertical="center")
+
+    state = {"r": 1}
+
+    def write_main_header(title):
+        r = state["r"]
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
+        c = ws.cell(row=r, column=1, value=title)
+        c.font = F_MAIN; c.fill = P_MAIN; c.alignment = A_LEFT
+        ws.row_dimensions[r].height = 24
+        state["r"] = r + 1
+
+    def write_meta(label, value):
+        r = state["r"]
+        c1 = ws.cell(row=r, column=1, value=label)
+        c1.font = F_LABEL; c1.fill = P_META; c1.alignment = A_LEFT
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=4)
+        c2 = ws.cell(row=r, column=2, value=value)
+        c2.font = F_VAL; c2.alignment = A_LEFT_PLAIN
+        state["r"] = r + 1
+
+    def write_section_bar(title):
+        state["r"] += 2
+        r = state["r"]
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
+        c = ws.cell(row=r, column=1, value=title)
+        c.font = F_SECTION; c.fill = P_SECTION; c.alignment = A_LEFT
+        ws.row_dimensions[r].height = 22
+        state["r"] = r + 2
+
+    def write_subsection_bar(title):
+        state["r"] += 1
+        r = state["r"]
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
+        c = ws.cell(row=r, column=1, value=title)
+        c.font = F_SUBSEC; c.fill = P_SUBSEC; c.alignment = A_LEFT
+        ws.row_dimensions[r].height = 20
+        state["r"] = r + 1
+
+    def write_kv(label, value):
+        r = state["r"]
+        c1 = ws.cell(row=r, column=1, value=label)
+        c1.font = F_LABEL; c1.alignment = A_LEFT
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=4)
+        c2 = ws.cell(row=r, column=2, value="" if value is None else str(value))
+        c2.font = F_VAL; c2.alignment = A_LEFT_PLAIN
+        state["r"] = r + 1
+
+    def write_bullet(text):
+        r = state["r"]
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=4)
+        c = ws.cell(row=r, column=2, value=f"• {text}")
+        c.font = F_BULLET; c.alignment = A_LEFT_PLAIN
+        state["r"] = r + 1
+
+    def write_inline_label(label):
+        r = state["r"]
+        c = ws.cell(row=r, column=1, value=f"  {label}")
+        c.font = F_VAL; c.alignment = A_LEFT_PLAIN
+        state["r"] = r + 1
+
+    def gap():
+        state["r"] += 1
+
+    # ----- 메인 헤더 + 메타 4행 -----
+    write_main_header("iDRAC 조회 결과")
+    write_meta("Service Tag", service_tag or "N/A")
+    write_meta("iDRAC IP", ip or "")
+    write_meta("조회 옵션", options_str or "")
+    write_meta("조회 시간", timestamp or "")
+
+    # ===== HW =====
+    if "hw" in payloads:
+        hw = payloads["hw"]
+        write_section_bar("Hardware Status && Health Check")
+
+        write_subsection_bar("System info"); gap()
+        s = hw.get("system", {})
+        write_kv("모델명", s.get("Model"))
+        write_kv("제조사", s.get("Manufacturer"))
+        write_kv("서비스 태그", s.get("ServiceTag"))
+        write_kv("전원 상태", s.get("PowerState"))
+        write_kv("시스템 상태", s.get("Health"))
+
+        write_subsection_bar("Processors"); gap()
+        cs = hw.get("cpu_summary", {})
+        write_kv("CPU 모델명", cs.get("Model"))
+        write_kv("CPU 수량", cs.get("Count"))
+        write_kv("CPU 상태", cs.get("Health"))
+        write_inline_label("CPU 상세 정보:")
+        for c in hw.get("cpus", []):
+            write_bullet(f"Socket {c['Socket']}: {c['Speed']} MHz, {c['Cores']} cores")
+
+        write_subsection_bar("System Memory"); gap()
+        ms = hw.get("memory_summary", {})
+        write_kv("Memory 총 용량", f"{ms.get('TotalGiB', 'N/A')} GiB")
+        write_kv("Memory 수량", len(hw.get("memory_modules", [])))
+        write_kv("Memory 상태", ms.get("Health"))
+        write_inline_label("Memory 용량    :")
+        for m in hw.get("memory_modules", []):
+            write_bullet(f"{m['Location']}: {m['CapacityGB']} GB @ {m['SpeedMHz']} MHz")
+
+        write_subsection_bar("FAN"); gap()
+        fans = hw.get("fans", [])
+        write_kv("FAN 수량", len(fans))
+        write_kv("FAN 상태",
+                 "OK" if fans and all(f.get("Health") == "OK" for f in fans) else
+                 ("Not OK" if fans else "N/A"))
+
+        write_subsection_bar("Storage Controller"); gap()
+        for c in hw.get("storage_controllers", []):
+            write_bullet(f"{c['Name']} (상태: {c['Health']})")
+
+        write_subsection_bar("RAID Configuration"); gap()
+        for r2 in hw.get("raids", []):
+            write_bullet(f"RAID Level: {r2['RAIDType']}, 용량: {r2['CapacityGB']} GB, 상태: {r2['Health']}")
+
+        write_subsection_bar("Physical Disks"); gap()
+        for d in hw.get("disks", []):
+            write_bullet(
+                f"Model: {d['Model']}, State: {d['State']}, "
+                f"Bus Protocol: {d['Protocol']}, Size: {d['SizeGB']} GB, Status: {d['Health']}"
+            )
+
+        write_subsection_bar("Power Supply"); gap()
+        ps = hw.get("psu_summary", {})
+        write_kv("PSU 수량", ps.get("Count"))
+        write_kv("PSU 상태", ps.get("Health"))
+        write_kv("PSU 총 전력 용량", f"{ps.get('TotalCapacityW', 'N/A')} W")
+        write_kv("PSU 이중화 상태", ps.get("Redundancy"))
+
+        write_subsection_bar("Network Adapters"); gap()
+        for n in hw.get("nics", []):
+            write_bullet(
+                f"Model: {n['Model']}, Adapter: {n['Adapter']}, "
+                f"Port: {n['Port']}, LinkStatus: {n['LinkStatus']}"
+            )
+
+    # ===== FW =====
+    if "fw" in payloads:
+        fw = payloads["fw"]
+        write_section_bar("Firmware Information")
+
+        write_subsection_bar("Service Tag"); gap()
+        write_kv("Service Tag", fw.get("service_tag", "N/A"))
+
+        use_all = (fw.get("all_components") and
+                   len(fw["all_components"]) > len(fw.get("components", [])))
+
+        if use_all:
+            write_subsection_bar(f"Firmware - 전체 컴포넌트 ({len(fw['all_components'])}개)")
+            gap()
+            for c in fw["all_components"]:
+                write_bullet(f"{c['Name']} — {c['Version']}")
+        else:
+            write_subsection_bar("Firmware (BIOS / LC / iDRAC / PERC / BOSS / CPLD / PSU / TPM 등)")
+            gap()
+            for c in fw.get("components", []):
+                write_bullet(f"{c['Name']} — {c['Version']}")
+
+        write_subsection_bar("NIC Firmware"); gap()
+        for n in fw.get("nic_fw", []):
+            write_bullet(f"{n['Slot']} / {n['Model']} — {n['FirmwareVersion']}")
+
+    # ===== BIOS =====
+    if "bios" in payloads:
+        bios = payloads["bios"]
+        write_section_bar("BIOS Configuration")
+
+        attrs = bios.get("all_attributes") or {}
+        if attrs and len(attrs) > 20:
+            # show_all 모드: 전체 속성 그룹별로
+            for name_grp, items in group_bios_attrs(attrs):
+                write_subsection_bar(name_grp); gap()
+                for k, v in items:
+                    write_kv(k, v)
+            pwr = bios.get("all_power_attributes") or {}
+            if pwr:
+                write_subsection_bar(f"iDRAC Manager Attributes ({len(pwr)}개)"); gap()
+                for k, v in pwr.items():
+                    write_kv(k, v)
+        else:
+            # 기본 (필터) 모드
+            write_subsection_bar("System Setup → System BIOS → System Profile Settings"); gap()
+            for k, v in bios.get("system_profile", {}).items():
+                write_kv(k, v)
+            write_subsection_bar("System Setup → System BIOS → Processor Settings"); gap()
+            for k, v in bios.get("processor", {}).items():
+                write_kv(k, v)
+            write_subsection_bar("System Setup → System BIOS → Integrated Devices"); gap()
+            for k, v in bios.get("integrated", {}).items():
+                write_kv(k, v)
+            write_subsection_bar("System Setup → Power Configuration"); gap()
+            for k, v in bios.get("power_config", {}).items():
+                write_kv(k, v)
+
+    wb.save(path)
+    return name
 
 
 def save_to_xlsx(path: str, sheet_prefix: str, kind: str, payload: dict,
@@ -1282,8 +1522,7 @@ def save_to_xlsx(path: str, sheet_prefix: str, kind: str, payload: dict,
             write_subsection_bar(f"Firmware - 전체 컴포넌트 ({len(payload['all_components'])}개)")
             gap()
             for c in payload["all_components"]:
-                upd = "  [업데이트 가능]" if c.get("Updateable") is True else ""
-                write_bullet(f"{c['Name']} — {c['Version']}{upd}")
+                write_bullet(f"{c['Name']} — {c['Version']}")
         else:
             write_subsection_bar("Firmware (BIOS / LC / iDRAC / PERC / BOSS / CPLD / PSU / TPM 등)")
             gap()
@@ -1845,20 +2084,16 @@ class MainWindow(QMainWindow):
         elif self.chk_5g.isChecked(): options_str += " (5g 모드)"
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+        # HW/FW/BIOS 를 모두 하나의 시트에 통합 저장 (시트명 = Service Tag)
+        payloads = {}
+        if "hw" in self.last_payload: payloads["hw"] = self.last_payload["hw"]
+        if "fw" in self.last_payload: payloads["fw"] = self.last_payload["fw"]
+        if "bios" in self.last_payload: payloads["bios"] = self.last_payload["bios"]
+
         used = []
         try:
-            if "hw" in self.last_payload:
-                self.last_payload["hw"]["__service_tag__"] = tag
-                used.append(save_to_xlsx(path, tag, "hw", self.last_payload["hw"],
-                                         ip=ip, options_str=options_str, timestamp=ts))
-            if "fw" in self.last_payload:
-                self.last_payload["fw"]["__service_tag__"] = tag
-                used.append(save_to_xlsx(path, tag, "fw", self.last_payload["fw"],
-                                         ip=ip, options_str=options_str, timestamp=ts))
-            if "bios" in self.last_payload:
-                self.last_payload["bios"]["__service_tag__"] = tag
-                used.append(save_to_xlsx(path, tag, "bios", self.last_payload["bios"],
-                                         ip=ip, options_str=options_str, timestamp=ts))
+            used.append(save_combined_xlsx(path, tag, payloads,
+                                           ip=ip, options_str=options_str, timestamp=ts))
         except Exception as e:
             QMessageBox.critical(self, "엑셀 저장 실패", f"{e}\n\n{traceback.format_exc()}")
             return
