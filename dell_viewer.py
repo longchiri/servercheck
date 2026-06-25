@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
     QComboBox, QSpinBox, QTextEdit, QTextBrowser, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QMessageBox, QFileDialog, QCheckBox, QStatusBar,
-    QSizePolicy, QFrame,
+    QSizePolicy, QFrame, QDialog, QProgressBar,
 )
 
 
@@ -144,6 +144,40 @@ class Inspector:
             return d.get("SKU", "N/A") or "N/A"
         except Exception:
             return "N/A"
+
+    # ---------- 로그 (LCLog / SEL) ----------
+    LOG_PATHS = {
+        "lclog": "/redfish/v1/Managers/iDRAC.Embedded.1/LogServices/Lclog/Entries",
+        "sel":   "/redfish/v1/Managers/iDRAC.Embedded.1/LogServices/Sel/Entries",
+    }
+    LOG_NAMES = {
+        "lclog": "Lifecycle Controller Log",
+        "sel":   "System Event Log (SEL)",
+    }
+
+    def fetch_log_count(self, log_type: str) -> int:
+        """전체 entry 개수 조회 (진행률 계산용)"""
+        path = self.LOG_PATHS.get(log_type)
+        if not path:
+            return 0
+        # $top=1 로 첫 1개만 받아서 총 개수 확인
+        try:
+            d = self._get(f"{path}?$top=1")
+            return int(d.get("Members@odata.count")
+                       or d.get("@odata.count") or 0)
+        except Exception:
+            return 0
+
+    def fetch_log_page(self, log_type: str, skip: int, top: int = 50) -> list:
+        """페이지 단위로 entry 조회"""
+        path = self.LOG_PATHS.get(log_type)
+        if not path:
+            return []
+        try:
+            d = self._get(f"{path}?$skip={skip}&$top={top}")
+            return d.get("Members", []) or []
+        except Exception:
+            return []
 
     def _get(self, path_or_url: str) -> dict:
         url = path_or_url if path_or_url.startswith("http") else self._url(path_or_url)
@@ -1643,6 +1677,169 @@ class FetchWorker(QThread):
 
 
 # =========================================================
+#  Log Fetch Worker (백그라운드 로그 추출 + 진행률 emit)
+# =========================================================
+class LogFetchWorker(QThread):
+    progress = Signal(int, int, str, str)   # current, total, log_type, log_name
+    finished_ok = Signal(dict)              # {'lclog': [...], 'sel': [...]}
+    failed = Signal(str, str)
+    cancel_requested = False
+
+    def __init__(self, ip, user, pw, log_types, parent=None):
+        super().__init__(parent)
+        self.ip, self.user, self.pw = ip, user, pw
+        self.log_types = log_types     # ['lclog', 'sel']
+        self.cancel_requested = False
+
+    def cancel(self):
+        self.cancel_requested = True
+
+    def run(self):
+        try:
+            insp = Inspector(self.ip, self.user, self.pw, timeout=30)
+            out = {}
+            for lt in self.log_types:
+                if self.cancel_requested:
+                    break
+                name = Inspector.LOG_NAMES.get(lt, lt)
+                self.progress.emit(0, 1, lt, name)
+                total = insp.fetch_log_count(lt)
+                if total == 0:
+                    out[lt] = []
+                    self.progress.emit(1, 1, lt, name)
+                    continue
+                entries = []
+                skip = 0
+                page_size = 50
+                while skip < total:
+                    if self.cancel_requested:
+                        break
+                    page = insp.fetch_log_page(lt, skip, page_size)
+                    if not page:
+                        break
+                    entries.extend(page)
+                    skip += len(page)
+                    self.progress.emit(min(skip, total), total, lt, name)
+                out[lt] = entries
+            self.finished_ok.emit(out)
+        except InspectorError as e:
+            if str(e) == "AUTH":
+                self.failed.emit("AUTH", "인증 실패 — 사용자/비밀번호를 확인해 주세요.")
+            else:
+                self.failed.emit("HTTP", f"서버 응답 오류: {e}")
+        except requests.exceptions.ConnectTimeout:
+            self.failed.emit("TIMEOUT", "연결 시간 초과 — iDRAC IP/네트워크를 확인해 주세요.")
+        except requests.exceptions.ConnectionError as e:
+            self.failed.emit("NETWORK", f"네트워크 오류 — iDRAC IP({self.ip})에 접근할 수 없습니다.")
+        except Exception as e:
+            self.failed.emit("UNK", f"예상치 못한 오류:\n{traceback.format_exc()}")
+
+
+# =========================================================
+#  Log Extract / Progress Dialogs
+# =========================================================
+class LogExtractDialog(QDialog):
+    """로그 종류 선택"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("로그 추출")
+        self.setMinimumWidth(400)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        title = QLabel("📥  추출할 iDRAC 로그를 선택하세요")
+        title.setStyleSheet("font-size:14px; font-weight:600; color:#1f2328;")
+        layout.addWidget(title)
+
+        self.chk_lclog = QCheckBox("Lifecycle Controller Log (LCLog)")
+        self.chk_lclog.setChecked(True)
+        self.chk_lclog.setToolTip("펌웨어 업데이트, 설정 변경, 부팅, 에러 등 라이프사이클 이벤트")
+        layout.addWidget(self.chk_lclog)
+        lc_desc = QLabel("    펌웨어 업데이트, 설정 변경, 부팅 / 에러 이력")
+        lc_desc.setStyleSheet("color:#57606a; font-size:11px;")
+        layout.addWidget(lc_desc)
+
+        self.chk_sel = QCheckBox("System Event Log (SEL)")
+        self.chk_sel.setChecked(True)
+        self.chk_sel.setToolTip("하드웨어 이벤트 (PSU, FAN, Memory ECC 오류 등)")
+        layout.addWidget(self.chk_sel)
+        sel_desc = QLabel("    PSU / FAN / Memory ECC 등 하드웨어 이벤트")
+        sel_desc.setStyleSheet("color:#57606a; font-size:11px;")
+        layout.addWidget(sel_desc)
+
+        layout.addSpacing(10)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        self.cancel_btn = QPushButton("취소")
+        self.cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(self.cancel_btn)
+        self.start_btn = QPushButton("추출 시작")
+        self.start_btn.setStyleSheet(
+            "QPushButton { background:#0969da; color:white; border:0; "
+            "border-radius:6px; padding:8px 20px; font-weight:600; }"
+            "QPushButton:hover { background:#0860c9; }")
+        self.start_btn.clicked.connect(self.accept)
+        btns.addWidget(self.start_btn)
+        layout.addLayout(btns)
+
+    def selected_types(self):
+        out = []
+        if self.chk_lclog.isChecked(): out.append("lclog")
+        if self.chk_sel.isChecked(): out.append("sel")
+        return out
+
+
+class LogProgressDialog(QDialog):
+    """추출 진행률 표시"""
+    cancelled = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("로그 추출 중...")
+        self.setMinimumWidth(440)
+        self.setModal(True)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        self.label = QLabel("준비 중...")
+        self.label.setStyleSheet("font-size:13px; color:#1f2328;")
+        layout.addWidget(self.label)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setTextVisible(True)
+        self.progress.setStyleSheet(
+            "QProgressBar { border:1px solid #d0d7de; border-radius:4px; "
+            "background:#f6f8fa; text-align:center; height:22px; }"
+            "QProgressBar::chunk { background:#0969da; border-radius:3px; }"
+        )
+        layout.addWidget(self.progress)
+
+        self.detail = QLabel("")
+        self.detail.setStyleSheet("color:#57606a; font-size:11px;")
+        layout.addWidget(self.detail)
+
+        layout.addSpacing(4)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        self.cancel_btn = QPushButton("취소")
+        self.cancel_btn.clicked.connect(self._on_cancel)
+        btns.addWidget(self.cancel_btn)
+        layout.addLayout(btns)
+
+    def _on_cancel(self):
+        self.cancelled.emit()
+        self.cancel_btn.setText("취소 중...")
+        self.cancel_btn.setEnabled(False)
+
+    def update_progress(self, current: int, total: int, log_type: str, log_name: str):
+        pct = int(current * 100 / total) if total > 0 else 0
+        self.label.setText(f"📥 {log_name}")
+        self.detail.setText(f"  {current:,} / {total:,} 항목 ({pct}%)")
+        self.progress.setValue(pct)
+
+
+# =========================================================
 #  Main Window
 # =========================================================
 class MainWindow(QMainWindow):
@@ -1807,6 +2004,16 @@ class MainWindow(QMainWindow):
             "QPushButton:disabled { background:#a8d4b6; color:#eef; }")
         self.save_xlsx_btn.clicked.connect(self.on_save_xlsx)
         tools.addWidget(self.save_xlsx_btn)
+
+        self.log_btn = QPushButton("📥  로그 추출")
+        self.log_btn.setStyleSheet(
+            "QPushButton { background:#6f42c1; color:white; border:0; border-radius:6px; padding:6px 14px; font-weight:600; }"
+            "QPushButton:hover { background:#5a2da3; }"
+            "QPushButton:pressed { background:#4c2588; }"
+            "QPushButton:disabled { background:#c4b3e0; color:#eef; }")
+        self.log_btn.setToolTip("iDRAC LCLog / SEL 로그 추출 후 엑셀로 저장")
+        self.log_btn.clicked.connect(self.on_log_extract)
+        tools.addWidget(self.log_btn)
 
         self.clear_btn = QPushButton("지우기")
         self.clear_btn.clicked.connect(self._clear)
@@ -2104,6 +2311,181 @@ class MainWindow(QMainWindow):
             f"파일: {path}\n추가된 시트: {', '.join(used)}\n\n"
             "같은 파일을 다시 선택해서 다른 서버 결과를 누적 저장할 수 있습니다."
         )
+
+    # ============================================================
+    # 📥 로그 추출
+    # ============================================================
+    def on_log_extract(self):
+        # 입력 검증
+        ip = self.ip_in.text().strip()
+        user = self.user_in.text().strip()
+        pw = self.pw_in.text()
+        missing = []
+        if not ip: missing.append("iDRAC IP")
+        if not user: missing.append("Username")
+        if not pw: missing.append("Password")
+        if missing:
+            QMessageBox.warning(self, APP_NAME,
+                "로그 추출에는 iDRAC 접속 정보가 필요합니다:\n• " + "\n• ".join(missing))
+            return
+
+        # 1) 로그 종류 선택 다이얼로그
+        sel_dlg = LogExtractDialog(self)
+        if sel_dlg.exec() != QDialog.Accepted:
+            return
+        log_types = sel_dlg.selected_types()
+        if not log_types:
+            QMessageBox.information(self, APP_NAME, "로그 종류를 최소 하나 선택해 주세요.")
+            return
+
+        # 2) 진행률 다이얼로그
+        self.log_progress_dlg = LogProgressDialog(self)
+
+        # 3) Worker 시작
+        self.log_worker = LogFetchWorker(ip, user, pw, log_types)
+        self.log_worker.progress.connect(self.log_progress_dlg.update_progress)
+        self.log_worker.finished_ok.connect(self._on_log_done)
+        self.log_worker.failed.connect(self._on_log_fail)
+        self.log_progress_dlg.cancelled.connect(self.log_worker.cancel)
+
+        self.log_btn.setEnabled(False)
+        self.log_worker.start()
+        self.log_progress_dlg.exec()  # 모달 표시
+
+    def _on_log_done(self, payload: dict):
+        self.log_progress_dlg.close()
+        self.log_btn.setEnabled(True)
+
+        # 결과 요약
+        counts = {k: len(v) for k, v in payload.items()}
+        if not any(counts.values()):
+            QMessageBox.information(self, APP_NAME, "추출된 로그가 없습니다.")
+            return
+
+        summary = "\n".join([f"  • {Inspector.LOG_NAMES.get(k, k)}: {c:,}개"
+                             for k, c in counts.items()])
+
+        # 4) 저장 위치 선택 다이얼로그
+        st = (self.last_payload or {}).get("service_tag", "")
+        if not st or st == "N/A":
+            try:
+                # 빠르게 ServiceTag 만 다시 조회 (없을 경우)
+                from datetime import datetime as _dt
+                st = "Server"
+            except Exception:
+                st = "Server"
+        default_name = f"iDRAC_Logs_{st}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        default_dir = self.settings.value("last_log_dir",
+                                          os.path.join(os.path.expanduser("~"), "Documents"), str)
+        initial = os.path.join(default_dir, default_name)
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            f"로그 저장 위치 선택  ({summary.strip()})",
+            initial,
+            "Excel 파일 (*.xlsx);;CSV 파일 (*.csv)"
+        )
+        if not path:
+            return  # 사용자가 취소
+
+        if not path.lower().endswith((".xlsx", ".csv")):
+            path += ".xlsx"
+
+        # 저장
+        try:
+            if path.lower().endswith(".csv"):
+                self._save_logs_csv(path, payload, st)
+            else:
+                self._save_logs_xlsx(path, payload, st)
+            self.settings.setValue("last_log_dir", os.path.dirname(path))
+            QMessageBox.information(self, "저장 완료",
+                f"파일: {path}\n\n포함된 로그:\n{summary}")
+        except Exception as e:
+            QMessageBox.critical(self, "저장 실패", f"{e}\n\n{traceback.format_exc()}")
+
+    def _on_log_fail(self, kind: str, msg: str):
+        if hasattr(self, 'log_progress_dlg'):
+            self.log_progress_dlg.close()
+        self.log_btn.setEnabled(True)
+        title = {"AUTH": "인증 실패", "TIMEOUT": "연결 시간 초과",
+                 "NETWORK": "네트워크 오류", "HTTP": "서버 응답 오류"}.get(kind, "오류")
+        QMessageBox.critical(self, title, msg)
+
+    def _save_logs_xlsx(self, path: str, payload: dict, service_tag: str):
+        """추출된 로그를 색상 있는 엑셀로 저장 (로그 종류별 시트)"""
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, Alignment, PatternFill
+
+        wb = Workbook()
+        if "Sheet" in wb.sheetnames:
+            del wb["Sheet"]
+
+        F_HEAD = Font(bold=True, color=XLSX_COLOR_WHITE, size=11)
+        P_HEAD = PatternFill("solid", fgColor=XLSX_COLOR_SECTION_BG)
+        # Severity 별 색상
+        SEV_FILL = {
+            "Critical": PatternFill("solid", fgColor="FFCCCC"),
+            "Warning":  PatternFill("solid", fgColor="FFF3CD"),
+            "OK":       PatternFill("solid", fgColor="D4F4DD"),
+        }
+        SEV_FONT = {
+            "Critical": Font(color="9B1C1C", bold=True),
+            "Warning":  Font(color="8C6D1F"),
+            "OK":       Font(color="1A7F37"),
+        }
+
+        for lt, entries in payload.items():
+            sheet_name = ("LCLog" if lt == "lclog" else "SEL")[:31]
+            ws = wb.create_sheet(sheet_name)
+            ws.column_dimensions["A"].width = 8
+            ws.column_dimensions["B"].width = 11
+            ws.column_dimensions["C"].width = 22
+            ws.column_dimensions["D"].width = 20
+            ws.column_dimensions["E"].width = 70
+
+            # 헤더
+            headers = ["#", "Severity", "Created", "MessageId", "Message"]
+            for col, h in enumerate(headers, 1):
+                c = ws.cell(row=1, column=col, value=h)
+                c.font = F_HEAD; c.fill = P_HEAD
+                c.alignment = Alignment(horizontal="center", vertical="center")
+            ws.row_dimensions[1].height = 22
+
+            # 데이터
+            for i, e in enumerate(entries, 1):
+                sev = e.get("Severity", "")
+                ws.cell(row=i+1, column=1, value=i)
+                ws.cell(row=i+1, column=2, value=sev)
+                ws.cell(row=i+1, column=3, value=e.get("Created", ""))
+                ws.cell(row=i+1, column=4, value=e.get("MessageId", ""))
+                ws.cell(row=i+1, column=5, value=e.get("Message", ""))
+                # Severity 컬러
+                if sev in SEV_FILL:
+                    for col in range(1, 6):
+                        ws.cell(row=i+1, column=col).fill = SEV_FILL[sev]
+                    ws.cell(row=i+1, column=2).font = SEV_FONT[sev]
+
+            # 첫 행 고정
+            ws.freeze_panes = "A2"
+
+        wb.save(path)
+
+    def _save_logs_csv(self, path: str, payload: dict, service_tag: str):
+        """CSV로 저장 (로그 종류별 별도 파일은 안 함, 하나에 모두)"""
+        import csv
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(["LogType", "#", "Severity", "Created", "MessageId", "Message"])
+            for lt, entries in payload.items():
+                lt_name = "LCLog" if lt == "lclog" else "SEL"
+                for i, e in enumerate(entries, 1):
+                    w.writerow([
+                        lt_name, i,
+                        e.get("Severity", ""),
+                        e.get("Created", ""),
+                        e.get("MessageId", ""),
+                        e.get("Message", ""),
+                    ])
 
 
 # =========================================================

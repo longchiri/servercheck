@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Dell 서버관리 — 워런티 + 사양 자동 조회",
+  "short_name": "TSR Helper",
+  "version": "1.8.8",
+  "description": "tsr-cloud 앱의 미등록 서버를 Dell 공식 페이지에서 워런티 / 제품 사양 자동 조회·저장합니다.",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.dell.com/*",
+    "http://www.dell.com/*",
+    "https://errors.edgesuite.net/*",
+    "https://tsr-cloud.pages.dev/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.dell.com/support/product-details/*", "http://www.dell.com/support/product-details/*", "https://www.dell.com/support/home/*", "http://www.dell.com/support/home/*", "https://errors.edgesuite.net/*"],
+      "js": ["content_dell.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://tsr-cloud.pages.dev/*"],
+      "js": ["content_app.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "TSR Warranty Helper",
+    "default_popup": "popup.html"
+  },
+  "externally_connectable": {
+    "matches": ["https://tsr-cloud.pages.dev/*"]
+  }
+}
