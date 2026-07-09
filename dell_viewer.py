@@ -179,6 +179,112 @@ class Inspector:
         except Exception:
             return []
 
+    # ---------- 펌웨어 업데이트 ----------
+    def get_update_service(self) -> dict:
+        """UpdateService 정보 조회 (지원 방식 등)"""
+        return self._get("/redfish/v1/UpdateService")
+
+    def check_update_ready(self) -> Tuple[bool, str]:
+        """iDRAC 상태 검증 — 진행 중 Job 있는지, 정상 상태인지"""
+        try:
+            # 진행 중인 Job 확인
+            jobs = self._get("/redfish/v1/Managers/iDRAC.Embedded.1/Oem/Dell/Jobs")
+            running = []
+            for m in jobs.get("Members", []):
+                try:
+                    j = self._get(m["@odata.id"])
+                    state = j.get("JobState", "")
+                    if state in ("Running", "Downloading", "Downloaded", "Scheduling"):
+                        running.append(f"{j.get('Id', '?')} ({j.get('Name', '')}: {state})")
+                except InspectorError:
+                    pass
+            if running:
+                return False, "진행 중인 Job 이 있습니다:\n  " + "\n  ".join(running)
+            return True, "OK"
+        except InspectorError as e:
+            return True, f"(상태 확인 실패, 계속 진행 가능: {e})"
+
+    def upload_firmware_multipart(self, file_path: str, apply_time: str = "Immediate",
+                                   progress_callback=None) -> str:
+        """Multipart HTTP Push 로 펌웨어 파일 업로드.
+           apply_time: 'Immediate' 또는 'OnReset'
+           progress_callback(bytes_sent, total_bytes) 있으면 업로드 진행률 콜백
+           반환: Job/Task URI (예: /redfish/v1/TaskService/Tasks/JID_xxxx)
+        """
+        import mimetypes
+        from requests_toolbelt.multipart.encoder import MultipartEncoder, MultipartEncoderMonitor
+
+        upload_url = self._url("/redfish/v1/UpdateService/MultipartUpload")
+
+        params = {
+            "Targets": [],
+            "@Redfish.OperationApplyTime": apply_time,
+            "Oem": {}
+        }
+
+        filename = os.path.basename(file_path)
+        mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+        encoder = MultipartEncoder(
+            fields={
+                "UpdateParameters": ("params.json", json.dumps(params), "application/json"),
+                "UpdateFile": (filename, open(file_path, "rb"), mime),
+            }
+        )
+
+        def cb(monitor):
+            if progress_callback:
+                progress_callback(monitor.bytes_read, monitor.len)
+
+        monitor = MultipartEncoderMonitor(encoder, cb)
+        headers = {"Content-Type": monitor.content_type}
+        # session.auth 는 이미 UTF-8 Authorization 헤더로 세팅됨
+
+        r = requests.post(
+            upload_url,
+            data=monitor,
+            headers={**headers, **{"Authorization": self.session.headers["Authorization"]}},
+            verify=False,
+            timeout=1800,  # 30분
+        )
+        if r.status_code not in (200, 201, 202):
+            raise InspectorError(f"업로드 실패: HTTP {r.status_code}: {r.text[:200]}")
+
+        # Job/Task 위치는 Location 헤더 또는 응답 본문에서
+        task_uri = r.headers.get("Location", "")
+        if not task_uri:
+            try:
+                task_uri = r.json().get("@odata.id", "")
+            except Exception:
+                pass
+        if not task_uri:
+            raise InspectorError("업로드는 성공했지만 Job/Task URI를 못 찾음")
+        return task_uri
+
+    def poll_job(self, job_uri: str) -> dict:
+        """Job/Task 상태 조회. 반환: {percent, state, messages}"""
+        try:
+            d = self._get(job_uri)
+        except InspectorError as e:
+            return {"percent": 0, "state": "Unknown", "message": str(e), "raw": {}}
+        # Dell OEM Job
+        pct = d.get("PercentComplete")
+        if pct is None:
+            pct = d.get("TaskProgress")
+        state = d.get("JobState") or d.get("TaskState") or "Unknown"
+        messages = d.get("Messages", [])
+        msg = ""
+        if messages:
+            msg = messages[-1].get("Message", "") if isinstance(messages[-1], dict) else str(messages[-1])
+        elif d.get("Message"):
+            msg = d.get("Message", "")
+        return {
+            "percent": int(pct) if pct is not None else 0,
+            "state": state,
+            "message": msg,
+            "raw": d,
+        }
+
     def _get(self, path_or_url: str) -> dict:
         url = path_or_url if path_or_url.startswith("http") else self._url(path_or_url)
         r = self.session.get(url, timeout=self.timeout)
@@ -1789,6 +1895,406 @@ class LogExtractDialog(QDialog):
         return out
 
 
+# =========================================================
+#  Firmware Update Worker + Dialogs
+# =========================================================
+class FirmwareUpdateWorker(QThread):
+    """3단계 진행: 1) 파일 업로드  2) iDRAC 검증  3) Job 진행"""
+    stage = Signal(str, str)             # stage_key ('upload'|'verify'|'install'), stage_name
+    upload_progress = Signal(int, int)   # bytes_sent, total_bytes
+    install_progress = Signal(int, str)  # percent, state_message
+    finished_ok = Signal(dict)           # {'job_uri': ..., 'apply_time': ..., 'final_state': ...}
+    failed = Signal(str, str)
+    cancel_requested = False
+
+    def __init__(self, ip, user, pw, file_path, apply_time, parent=None):
+        super().__init__(parent)
+        self.ip, self.user, self.pw = ip, user, pw
+        self.file_path = file_path
+        self.apply_time = apply_time   # 'Immediate' or 'OnReset'
+        self.cancel_requested = False
+
+    def cancel(self):
+        self.cancel_requested = True
+
+    def run(self):
+        try:
+            insp = Inspector(self.ip, self.user, self.pw, timeout=60)
+
+            # STAGE 1: 서버 상태 확인
+            self.stage.emit("verify", "iDRAC 상태 확인 중...")
+            ready, reason = insp.check_update_ready()
+            if not ready:
+                self.failed.emit("BUSY", reason)
+                return
+
+            # STAGE 2: 파일 업로드
+            self.stage.emit("upload", "펌웨어 파일 업로드 중...")
+
+            def upload_cb(sent, total):
+                if not self.cancel_requested:
+                    self.upload_progress.emit(sent, total)
+
+            try:
+                job_uri = insp.upload_firmware_multipart(
+                    self.file_path, self.apply_time, progress_callback=upload_cb
+                )
+            except Exception as e:
+                self.failed.emit("UPLOAD", f"업로드 실패:\n{e}")
+                return
+
+            # STAGE 3: Job 진행률 폴링
+            self.stage.emit("install", "iDRAC 이 펌웨어 적용 중...")
+
+            import time
+            last_state = ""
+            stuck_count = 0
+            timeout_sec = 3600  # 1시간
+            start_ts = time.time()
+
+            while not self.cancel_requested:
+                if time.time() - start_ts > timeout_sec:
+                    self.failed.emit("TIMEOUT", "1시간이 지나도 Job 이 끝나지 않아 대기 중단.")
+                    return
+
+                info = insp.poll_job(job_uri)
+                state = info["state"]
+                pct = info["percent"]
+                msg = info["message"] or f"상태: {state}"
+
+                self.install_progress.emit(pct, msg)
+
+                # 완료 조건
+                if state in ("Completed", "RebootCompleted"):
+                    self.finished_ok.emit({
+                        "job_uri": job_uri,
+                        "apply_time": self.apply_time,
+                        "final_state": state,
+                        "message": msg,
+                        "reboot_pending": self.apply_time == "OnReset",
+                    })
+                    return
+                if state in ("Failed", "Exception", "CompletedWithErrors"):
+                    self.failed.emit("JOB", f"Job 실패: {state}\n{msg}")
+                    return
+                # OnReset 모드에서 "Scheduled" 상태면 완료로 간주 (재부팅 대기)
+                if self.apply_time == "OnReset" and state in ("Scheduled", "New", "Ready"):
+                    if last_state == state:
+                        stuck_count += 1
+                    else:
+                        stuck_count = 0
+                    if stuck_count > 5:
+                        # 5회 이상 같은 상태면 예약 완료로 간주
+                        self.finished_ok.emit({
+                            "job_uri": job_uri,
+                            "apply_time": self.apply_time,
+                            "final_state": state,
+                            "message": "다음 재부팅 시 자동 적용됩니다.",
+                            "reboot_pending": True,
+                        })
+                        return
+
+                last_state = state
+                time.sleep(5)  # 5초 간격 폴링
+
+            # 취소됨
+            self.failed.emit("CANCEL", "사용자가 취소했습니다. iDRAC 쪽 Job 은 여전히 진행 중일 수 있으니 나중에 iDRAC 웹 UI 로 확인해 주세요.")
+
+        except Exception as e:
+            self.failed.emit("UNK", f"예상치 못한 오류:\n{traceback.format_exc()}")
+
+
+class FirmwareSafetyDialog(QDialog):
+    """1단계 — 위험 경고 + 3개 안전 확인 체크박스"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("⚠️ 펌웨어 업데이트 — 안전 확인")
+        self.setMinimumWidth(560)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+
+        warn_bg = QLabel(
+            "<div style='background:#FFF0F0; border-left:5px solid #D1242F; "
+            "padding:12px 16px; color:#9B1C1C; line-height:1.6;'>"
+            "<b style='font-size:14px;'>⚠️ 위험한 작업입니다</b><br>"
+            "<span style='font-size:11px;'>"
+            "• 잘못된 펌웨어를 올리면 서버가 부팅 불가 상태가 될 수 있습니다.<br>"
+            "• BIOS/iDRAC 업데이트는 재부팅을 유발할 수 있어 <b>서비스 중단</b> 이 발생합니다.<br>"
+            "• 업데이트 중에는 <b>전원을 절대 끄면 안 됩니다.</b>"
+            "</span></div>"
+        )
+        warn_bg.setTextFormat(Qt.RichText)
+        warn_bg.setWordWrap(True)
+        layout.addWidget(warn_bg)
+
+        confirm_label = QLabel("<b>아래 항목을 모두 확인하셨습니까?</b>")
+        confirm_label.setStyleSheet("font-size:13px; color:#1f2328; margin-top:6px;")
+        layout.addWidget(confirm_label)
+
+        self.chk1 = QCheckBox("① 지금은 유지보수 시간 (서비스 중이 아님)")
+        self.chk2 = QCheckBox("② 대상 서버 데이터 백업이 완료됨 (또는 백업 불필요)")
+        self.chk3 = QCheckBox("③ Dell 공식 펌웨어 파일이며 대상 모델과 일치함")
+        for c in (self.chk1, self.chk2, self.chk3):
+            c.setStyleSheet("font-size:12px; padding:4px 0;")
+            layout.addWidget(c)
+            c.toggled.connect(self._update_btn)
+
+        layout.addSpacing(6)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        self.cancel_btn = QPushButton("취소")
+        self.cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(self.cancel_btn)
+        self.next_btn = QPushButton("다음 →")
+        self.next_btn.setEnabled(False)
+        self.next_btn.setStyleSheet(
+            "QPushButton { background:#D1242F; color:white; border:0; "
+            "border-radius:6px; padding:8px 20px; font-weight:600; }"
+            "QPushButton:hover:enabled { background:#B01824; }"
+            "QPushButton:disabled { background:#F0C0C0; color:#eef; }")
+        self.next_btn.clicked.connect(self.accept)
+        btns.addWidget(self.next_btn)
+        layout.addLayout(btns)
+
+    def _update_btn(self):
+        self.next_btn.setEnabled(self.chk1.isChecked() and self.chk2.isChecked() and self.chk3.isChecked())
+
+
+class FirmwareSelectDialog(QDialog):
+    """2단계 — 파일 선택 + 적용 시점 선택 + 대상 정보"""
+    def __init__(self, parent=None, target_info: dict = None):
+        super().__init__(parent)
+        self.setWindowTitle("펌웨어 파일 선택 및 옵션")
+        self.setMinimumWidth(600)
+        self.selected_file = None
+        self.selected_apply = "Immediate"
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        # 대상 서버 정보
+        target_info = target_info or {}
+        info_html = (
+            f"<div style='background:#F6F8FA; border:1px solid #D0D7DE; "
+            f"padding:10px 14px; border-radius:6px; font-size:11px;'>"
+            f"<b>대상 서버</b><br>"
+            f"iDRAC IP: <b>{html.escape(target_info.get('ip', '-'))}</b><br>"
+            f"Service Tag: <b>{html.escape(target_info.get('service_tag', '(조회 안 됨)'))}</b>"
+            f"</div>"
+        )
+        lbl_info = QLabel(info_html)
+        lbl_info.setTextFormat(Qt.RichText)
+        layout.addWidget(lbl_info)
+
+        # 파일 선택
+        file_row = QHBoxLayout()
+        file_row.addWidget(QLabel("펌웨어 파일:"))
+        self.file_input = QLineEdit()
+        self.file_input.setReadOnly(True)
+        self.file_input.setPlaceholderText("Dell 공식 .exe / .d7 파일 선택...")
+        file_row.addWidget(self.file_input, 1)
+        self.browse_btn = QPushButton("찾아보기...")
+        self.browse_btn.clicked.connect(self._browse_file)
+        file_row.addWidget(self.browse_btn)
+        layout.addLayout(file_row)
+
+        self.file_info_lbl = QLabel("")
+        self.file_info_lbl.setStyleSheet("color:#57606a; font-size:11px; padding-left:4px;")
+        layout.addWidget(self.file_info_lbl)
+
+        layout.addSpacing(6)
+
+        # 적용 시점
+        apply_group = QLabel("<b>적용 시점</b>")
+        apply_group.setStyleSheet("font-size:12px; color:#1f2328;")
+        layout.addWidget(apply_group)
+
+        from PySide6.QtWidgets import QRadioButton, QButtonGroup
+        self.rb_now = QRadioButton("즉시 적용 (Immediate) — 자동 재부팅 발생, 서비스 중단됨")
+        self.rb_now.setStyleSheet("font-size:12px; padding:3px 0;")
+        self.rb_now.setChecked(True)
+        self.rb_reset = QRadioButton("다음 재부팅 시 적용 (OnReset) — 안전, 유저가 재부팅할 때 반영")
+        self.rb_reset.setStyleSheet("font-size:12px; padding:3px 0;")
+        layout.addWidget(self.rb_now)
+        layout.addWidget(self.rb_reset)
+
+        layout.addSpacing(8)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        self.cancel_btn = QPushButton("취소")
+        self.cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(self.cancel_btn)
+        self.next_btn = QPushButton("다음 →")
+        self.next_btn.setEnabled(False)
+        self.next_btn.clicked.connect(self._on_next)
+        self.next_btn.setStyleSheet(
+            "QPushButton { background:#0969DA; color:white; border:0; "
+            "border-radius:6px; padding:8px 20px; font-weight:600; }"
+            "QPushButton:hover:enabled { background:#0860C9; }"
+            "QPushButton:disabled { background:#B0C4DE; color:#eef; }")
+        btns.addWidget(self.next_btn)
+        layout.addLayout(btns)
+
+    def _browse_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "펌웨어 파일 선택",
+            os.path.expanduser("~/Downloads"),
+            "Dell 펌웨어 (*.exe *.d7 *.EXE *.D7);;모든 파일 (*.*)"
+        )
+        if not path:
+            return
+        self.selected_file = path
+        self.file_input.setText(path)
+        size_mb = os.path.getsize(path) / (1024 * 1024)
+        self.file_info_lbl.setText(f"  파일: {os.path.basename(path)}   크기: {size_mb:.1f} MB")
+        self.next_btn.setEnabled(True)
+
+    def _on_next(self):
+        self.selected_apply = "Immediate" if self.rb_now.isChecked() else "OnReset"
+        self.accept()
+
+
+class FirmwareConfirmDialog(QDialog):
+    """3단계 — 최종 확인 (UPDATE 타이핑 요구)"""
+    def __init__(self, parent=None, summary: dict = None):
+        super().__init__(parent)
+        self.setWindowTitle("최종 확인")
+        self.setMinimumWidth(560)
+        summary = summary or {}
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+
+        title = QLabel(
+            "<div style='background:#FFF8E1; border-left:5px solid #E8A317; "
+            "padding:12px 16px; color:#7A5A00;'>"
+            "<b style='font-size:14px;'>🔒 마지막 확인</b><br>"
+            "<span style='font-size:11px;'>확인 후에는 되돌릴 수 없습니다.</span>"
+            "</div>"
+        )
+        title.setTextFormat(Qt.RichText)
+        layout.addWidget(title)
+
+        # 요약 정보
+        sm = (
+            f"<table cellpadding='6' style='font-size:12px;'>"
+            f"<tr><td style='color:#57606a;'>대상 IP</td><td><b>{html.escape(summary.get('ip', '-'))}</b></td></tr>"
+            f"<tr><td style='color:#57606a;'>Service Tag</td><td><b>{html.escape(summary.get('service_tag', '-'))}</b></td></tr>"
+            f"<tr><td style='color:#57606a;'>펌웨어 파일</td><td><b>{html.escape(os.path.basename(summary.get('file', '-')))}</b></td></tr>"
+            f"<tr><td style='color:#57606a;'>파일 크기</td><td><b>{summary.get('size_mb', 0):.1f} MB</b></td></tr>"
+            f"<tr><td style='color:#57606a;'>적용 시점</td><td><b>{summary.get('apply', '-')}</b></td></tr>"
+            f"</table>"
+        )
+        summary_lbl = QLabel(sm)
+        summary_lbl.setTextFormat(Qt.RichText)
+        layout.addWidget(summary_lbl)
+
+        # UPDATE 타이핑
+        confirm_lbl = QLabel(
+            "<span style='color:#1f2328; font-size:12px;'>"
+            "계속하시려면 아래 칸에 <b><code>UPDATE</code></b> 를 대문자로 정확히 입력하세요:"
+            "</span>"
+        )
+        confirm_lbl.setTextFormat(Qt.RichText)
+        layout.addWidget(confirm_lbl)
+
+        self.confirm_input = QLineEdit()
+        self.confirm_input.setPlaceholderText("UPDATE")
+        self.confirm_input.textChanged.connect(self._check_input)
+        layout.addWidget(self.confirm_input)
+
+        layout.addSpacing(6)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        self.cancel_btn = QPushButton("취소")
+        self.cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(self.cancel_btn)
+        self.confirm_btn = QPushButton("업데이트 시작")
+        self.confirm_btn.setEnabled(False)
+        self.confirm_btn.clicked.connect(self.accept)
+        self.confirm_btn.setStyleSheet(
+            "QPushButton { background:#D1242F; color:white; border:0; "
+            "border-radius:6px; padding:8px 24px; font-weight:700; }"
+            "QPushButton:hover:enabled { background:#B01824; }"
+            "QPushButton:disabled { background:#F0C0C0; color:#eef; }")
+        btns.addWidget(self.confirm_btn)
+        layout.addLayout(btns)
+
+    def _check_input(self, text):
+        self.confirm_btn.setEnabled(text.strip() == "UPDATE")
+
+
+class FirmwareProgressDialog(QDialog):
+    """진행률 다이얼로그 — 3단계(Verify → Upload → Install)"""
+    cancelled = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("펌웨어 업데이트 진행 중")
+        self.setMinimumWidth(560)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        self.stage_label = QLabel("준비 중...")
+        self.stage_label.setStyleSheet("font-size:14px; font-weight:600; color:#1f2328;")
+        layout.addWidget(self.stage_label)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setTextVisible(True)
+        self.progress.setStyleSheet(
+            "QProgressBar { border:1px solid #d0d7de; border-radius:4px; "
+            "background:#f6f8fa; text-align:center; height:24px; font-weight:600; }"
+            "QProgressBar::chunk { background:#0969da; border-radius:3px; }"
+        )
+        layout.addWidget(self.progress)
+
+        self.detail = QLabel("")
+        self.detail.setStyleSheet("color:#57606a; font-size:11px; padding-top:4px;")
+        self.detail.setWordWrap(True)
+        layout.addWidget(self.detail)
+
+        # 3단계 표시
+        self.stages_label = QLabel(
+            "<span style='font-size:10px; color:#57606a;'>"
+            "① 상태 확인 &nbsp; → &nbsp; ② 파일 업로드 &nbsp; → &nbsp; ③ iDRAC 적용"
+            "</span>"
+        )
+        self.stages_label.setTextFormat(Qt.RichText)
+        layout.addWidget(self.stages_label)
+
+        layout.addSpacing(4)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        self.cancel_btn = QPushButton("취소")
+        self.cancel_btn.clicked.connect(self._on_cancel)
+        btns.addWidget(self.cancel_btn)
+        layout.addLayout(btns)
+
+    def _on_cancel(self):
+        self.cancelled.emit()
+        self.cancel_btn.setText("취소 중...")
+        self.cancel_btn.setEnabled(False)
+
+    def set_stage(self, key: str, name: str):
+        stage_map = {"verify": "①", "upload": "②", "install": "③"}
+        mark = stage_map.get(key, "")
+        self.stage_label.setText(f"{mark}  {name}")
+
+    def set_upload_progress(self, sent: int, total: int):
+        pct = int(sent * 100 / total) if total > 0 else 0
+        self.progress.setValue(pct)
+        sent_mb = sent / (1024*1024)
+        total_mb = total / (1024*1024)
+        self.detail.setText(f"  업로드: {sent_mb:.1f} / {total_mb:.1f} MB ({pct}%)")
+
+    def set_install_progress(self, pct: int, msg: str):
+        self.progress.setValue(pct)
+        self.detail.setText(f"  {msg}")
+
+
 class LogProgressDialog(QDialog):
     """추출 진행률 표시"""
     cancelled = Signal()
@@ -2014,6 +2520,16 @@ class MainWindow(QMainWindow):
         self.log_btn.setToolTip("iDRAC LCLog / SEL 로그 추출 후 엑셀로 저장")
         self.log_btn.clicked.connect(self.on_log_extract)
         tools.addWidget(self.log_btn)
+
+        self.fw_btn = QPushButton("🔧  펌웨어 업데이트")
+        self.fw_btn.setStyleSheet(
+            "QPushButton { background:#D1242F; color:white; border:0; border-radius:6px; padding:6px 14px; font-weight:600; }"
+            "QPushButton:hover { background:#B01824; }"
+            "QPushButton:pressed { background:#8E0F1B; }"
+            "QPushButton:disabled { background:#F0C0C0; color:#eef; }")
+        self.fw_btn.setToolTip("⚠️ 위험한 작업 — 3단계 안전 확인 후 진행")
+        self.fw_btn.clicked.connect(self.on_firmware_update)
+        tools.addWidget(self.fw_btn)
 
         self.clear_btn = QPushButton("지우기")
         self.clear_btn.clicked.connect(self._clear)
@@ -2469,6 +2985,91 @@ class MainWindow(QMainWindow):
             ws.freeze_panes = "A2"
 
         wb.save(path)
+
+    # ============================================================
+    # 🔧 펌웨어 업데이트
+    # ============================================================
+    def on_firmware_update(self):
+        # 입력 검증
+        ip = self.ip_in.text().strip()
+        user = self.user_in.text().strip()
+        pw = self.pw_in.text()
+        missing = []
+        if not ip: missing.append("iDRAC IP")
+        if not user: missing.append("Username")
+        if not pw: missing.append("Password")
+        if missing:
+            QMessageBox.warning(self, APP_NAME,
+                "펌웨어 업데이트에는 iDRAC 접속 정보가 필요합니다:\n• " + "\n• ".join(missing))
+            return
+
+        # STEP 1: 위험 경고 + 3개 체크박스
+        safety = FirmwareSafetyDialog(self)
+        if safety.exec() != QDialog.Accepted:
+            return
+
+        # STEP 2: 파일 선택 + 적용 시점
+        st = (self.last_payload or {}).get("service_tag", "-")
+        target_info = {"ip": ip, "service_tag": st}
+        select = FirmwareSelectDialog(self, target_info=target_info)
+        if select.exec() != QDialog.Accepted:
+            return
+        file_path = select.selected_file
+        apply_time = select.selected_apply
+
+        # STEP 3: 최종 확인 (UPDATE 타이핑)
+        size_mb = os.path.getsize(file_path) / (1024*1024)
+        summary = {
+            "ip": ip, "service_tag": st,
+            "file": file_path, "size_mb": size_mb,
+            "apply": "즉시 적용 (자동 재부팅 발생)" if apply_time == "Immediate"
+                     else "다음 재부팅 시 적용 (안전)",
+        }
+        confirm = FirmwareConfirmDialog(self, summary=summary)
+        if confirm.exec() != QDialog.Accepted:
+            return
+
+        # STEP 4: 진행률 다이얼로그 + Worker 시작
+        self.fw_progress_dlg = FirmwareProgressDialog(self)
+
+        self.fw_worker = FirmwareUpdateWorker(ip, user, pw, file_path, apply_time)
+        self.fw_worker.stage.connect(self.fw_progress_dlg.set_stage)
+        self.fw_worker.upload_progress.connect(self.fw_progress_dlg.set_upload_progress)
+        self.fw_worker.install_progress.connect(self.fw_progress_dlg.set_install_progress)
+        self.fw_worker.finished_ok.connect(self._on_fw_done)
+        self.fw_worker.failed.connect(self._on_fw_fail)
+        self.fw_progress_dlg.cancelled.connect(self.fw_worker.cancel)
+
+        self.fw_btn.setEnabled(False)
+        self.fw_worker.start()
+        self.fw_progress_dlg.exec()
+
+    def _on_fw_done(self, result: dict):
+        self.fw_progress_dlg.close()
+        self.fw_btn.setEnabled(True)
+        reboot_msg = ""
+        if result.get("reboot_pending"):
+            reboot_msg = ("\n\n📌 <b>다음 재부팅 시</b>에 자동으로 적용됩니다.\n"
+                         "관리 대상 서버가 재부팅될 때까지 새 펌웨어는 활성화되지 않습니다.")
+        QMessageBox.information(
+            self, "업데이트 완료",
+            f"펌웨어 업데이트가 성공적으로 완료되었습니다.\n\n"
+            f"최종 상태: {result.get('final_state', 'Completed')}\n"
+            f"Job URI: {result.get('job_uri', '-')}\n"
+            f"메시지: {result.get('message', '')}{reboot_msg}"
+        )
+
+    def _on_fw_fail(self, kind: str, msg: str):
+        if hasattr(self, 'fw_progress_dlg'):
+            self.fw_progress_dlg.close()
+        self.fw_btn.setEnabled(True)
+        title = {
+            "AUTH": "인증 실패", "TIMEOUT": "시간 초과",
+            "NETWORK": "네트워크 오류", "UPLOAD": "업로드 실패",
+            "JOB": "Job 실패", "BUSY": "iDRAC 사용 중",
+            "CANCEL": "취소됨",
+        }.get(kind, "오류")
+        QMessageBox.critical(self, title, msg)
 
     def _save_logs_csv(self, path: str, payload: dict, service_tag: str):
         """CSV로 저장 (로그 종류별 별도 파일은 안 함, 하나에 모두)"""

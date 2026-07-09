@@ -39,7 +39,7 @@ source .venv_qt/bin/activate
 # 3) 패키지 설치
 echo "🟡 PySide6, requests, openpyxl, pyinstaller 설치 중..."
 pip install --upgrade pip >/dev/null
-pip install PySide6 requests openpyxl pyinstaller >/dev/null
+pip install PySide6 requests requests-toolbelt openpyxl pyinstaller >/dev/null
 
 # 4) 기존 빌드 정리
 rm -rf build dist "${APP_NAME}.spec"

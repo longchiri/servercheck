@@ -41,7 +41,7 @@ call .venv_qt_win\Scripts\activate.bat
 echo.
 echo === [3/5] 패키지 설치 (PySide6, requests, openpyxl, pyinstaller) ===
 python -m pip install --upgrade pip
-python -m pip install PySide6 requests openpyxl pyinstaller
+python -m pip install PySide6 requests requests-toolbelt openpyxl pyinstaller
 
 echo.
 echo === [4/5] 기존 빌드 정리 ===

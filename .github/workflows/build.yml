@@ -28,7 +28,7 @@ jobs:
       - name: 의존 패키지 설치
         run: |
           python -m pip install --upgrade pip
-          pip install PySide6 requests openpyxl pyinstaller
+          pip install PySide6 requests requests-toolbelt openpyxl pyinstaller
 
       - name: PyInstaller 로 .app 빌드
         run: |
@@ -75,7 +75,7 @@ jobs:
       - name: 의존 패키지 설치
         run: |
           python -m pip install --upgrade pip
-          pip install PySide6 requests openpyxl pyinstaller
+          pip install PySide6 requests requests-toolbelt openpyxl pyinstaller
 
       - name: PyInstaller 로 .exe 빌드
         run: |
