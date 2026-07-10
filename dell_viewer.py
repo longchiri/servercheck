@@ -2548,12 +2548,17 @@ class MainWindow(QMainWindow):
 
         root.addWidget(conn_box)
 
-        # 결과 위 도구 바
-        tools = QHBoxLayout()
+        # 결과 위 도구 바 (두 줄)
+        # ── 1줄: 표시 옵션 (보기좋게 / 폰트 / 키필터) ──
+        tools_row1 = QHBoxLayout()
+        tools_row1.setSpacing(10)
+
         self.pretty_chk = QCheckBox("보기 좋게")
         self.pretty_chk.setChecked(True)
         self.pretty_chk.toggled.connect(self._rerender)
-        tools.addWidget(self.pretty_chk)
+        tools_row1.addWidget(self.pretty_chk)
+
+        tools = tools_row1  # 기존 코드에서 tools 참조하는 부분 유지
 
         # show_all / 5g 토글이 바뀌면 같은 데이터로 즉시 재렌더
         self.chk_show_all.toggled.connect(self._rerender)
@@ -2588,18 +2593,32 @@ class MainWindow(QMainWindow):
         tools.addWidget(self.key_filter_clear_btn)
 
         tools.addStretch()
+        root.addLayout(tools_row1)
+
+        # ── 2줄: 액션 버튼들 (텍스트 액션 | 저장 | 위험 액션 | 유틸리티) ──
+        tools_row2 = QHBoxLayout()
+        tools_row2.setSpacing(6)
 
         self.copy_all_btn = QPushButton("전체 선택")
         self.copy_all_btn.clicked.connect(lambda: (self.result.selectAll(), self.result.copy()))
-        tools.addWidget(self.copy_all_btn)
+        tools_row2.addWidget(self.copy_all_btn)
 
         self.copy_btn = QPushButton("복사")
         self.copy_btn.clicked.connect(lambda: self.result.copy())
-        tools.addWidget(self.copy_btn)
+        tools_row2.addWidget(self.copy_btn)
 
         self.save_txt_btn = QPushButton("저장 (TXT)")
         self.save_txt_btn.clicked.connect(self.on_save_txt)
-        tools.addWidget(self.save_txt_btn)
+        tools_row2.addWidget(self.save_txt_btn)
+
+        # 그룹 구분자 1
+        sep_a = QFrame(); sep_a.setFrameShape(QFrame.VLine); sep_a.setStyleSheet("color:#D0D7DE;")
+        sep_a.setFixedHeight(24)
+        tools_row2.addSpacing(6)
+        tools_row2.addWidget(sep_a)
+        tools_row2.addSpacing(6)
+        # tools 변수를 row2로 이관
+        tools = tools_row2
 
         self.save_xlsx_btn = QPushButton("📊  엑셀로 저장")
         self.save_xlsx_btn.setStyleSheet(
@@ -2630,6 +2649,13 @@ class MainWindow(QMainWindow):
         self.fw_btn.clicked.connect(self.on_firmware_update)
         tools.addWidget(self.fw_btn)
 
+        # 그룹 구분자 2 (액션 vs 유틸리티)
+        tools.addStretch()
+        sep_b = QFrame(); sep_b.setFrameShape(QFrame.VLine); sep_b.setStyleSheet("color:#D0D7DE;")
+        sep_b.setFixedHeight(24)
+        tools.addWidget(sep_b)
+        tools.addSpacing(6)
+
         # 문의 버튼 (도구바 오른쪽 끝)
         self.contact_btn = QPushButton("❓ 문의")
         self.contact_btn.setStyleSheet(
@@ -2645,7 +2671,7 @@ class MainWindow(QMainWindow):
         self.clear_btn.clicked.connect(self._clear)
         tools.addWidget(self.clear_btn)
 
-        root.addLayout(tools)
+        root.addLayout(tools_row2)
 
         # 결과창
         self.result = QTextBrowser()
@@ -2680,152 +2706,215 @@ class MainWindow(QMainWindow):
         return wrap
 
     def _help_html(self):
-        """앱 내장 사용법 (PDF와 동일 흐름)"""
-        # 스타일
-        S_H1 = ("background:#264F78; color:white; padding:10px 16px; "
-                "font-size:16px; font-weight:700; margin-top:20px; margin-bottom:10px;")
-        S_H2 = ("background:#D5E5F2; color:#0E639C; padding:8px 14px; "
-                "font-size:13px; font-weight:700; margin-top:16px; margin-bottom:8px; "
-                "border-left:4px solid #0E639C;")
-        S_TIP = ("background:#E8F4FE; color:#0550AE; padding:10px 14px; "
-                 "border-left:4px solid #0550AE; margin:10px 0; font-size:12px;")
-        S_WARN = ("background:#FFF8E1; color:#7A5A00; padding:10px 14px; "
-                  "border-left:4px solid #E8A317; margin:10px 0; font-size:12px;")
-        S_DANGER = ("background:#FFF0F0; color:#9B1C1C; padding:10px 14px; "
-                    "border-left:4px solid #D1242F; margin:10px 0; font-size:12px;")
+        """앱 내장 사용법 — 노션/GitHub Docs 톤의 미니멀 디자인
+           (max-width 720px, subtle 헤더, 여유로운 여백)
+        """
+        # 스타일 상수 — 톤 다운
+        H1 = ("color:#1F2328; font-size:22px; font-weight:700; "
+              "margin:44px 0 8px 0; padding-bottom:8px; "
+              "border-bottom:2px solid #E8A317;")
+        H2 = ("color:#0969DA; font-size:15px; font-weight:700; "
+              "margin:26px 0 8px 0; padding-left:12px; "
+              "border-left:3px solid #0969DA;")
+        H3 = ("color:#1F2328; font-size:13px; font-weight:700; "
+              "margin:16px 0 6px 0;")
+        P  = "color:#333; font-size:13px; line-height:1.8; margin:6px 0;"
+        LI = "color:#333; font-size:13px; line-height:1.9;"
+
+        BOX_TIP = ("background:#DDF4FF; border:1px solid #B6E3FF; "
+                   "border-left:4px solid #0969DA; "
+                   "padding:14px 18px; margin:14px 0; "
+                   "color:#0550AE; font-size:12.5px; line-height:1.7; border-radius:4px;")
+        BOX_WARN = ("background:#FFF8E1; border:1px solid #F0C36D; "
+                    "border-left:4px solid #E8A317; "
+                    "padding:14px 18px; margin:14px 0; "
+                    "color:#7A5A00; font-size:12.5px; line-height:1.7; border-radius:4px;")
+        BOX_DANGER = ("background:#FFEBE9; border:1px solid #FF8182; "
+                      "border-left:4px solid #D1242F; "
+                      "padding:14px 18px; margin:14px 0; "
+                      "color:#9B1C1C; font-size:12.5px; line-height:1.7; border-radius:4px;")
+
+        CODE = ("background:#EFF1F3; color:#0969DA; "
+                "padding:2px 6px; border-radius:3px; "
+                "font-family:Menlo,Consolas,monospace; font-size:12px;")
+
+        TABLE = ("border-collapse:collapse; width:100%; margin:14px 0; "
+                 "font-size:12.5px; border-radius:4px; overflow:hidden;")
+        TH = ("background:#0E639C; color:white; text-align:left; "
+              "padding:10px 14px; font-weight:600; font-size:12px;")
+        TD = ("padding:9px 14px; border-bottom:1px solid #EAEDF0; color:#333;")
+
+        # 최상위 컨테이너 — 최대폭 720px, 여백 넉넉
+        wrapper_open = ("<div style='max-width:720px; margin:0 auto; "
+                        "padding:20px 8px 60px 8px; font-family:-apple-system,BlinkMacSystemFont,"
+                        "\"Helvetica Neue\",sans-serif;'>")
+        wrapper_close = "</div>"
 
         return f"""
-<h1 style="color:#264F78; font-size:24px; margin-bottom:4px;">📖 iDRAC Toolkit 사용법</h1>
-<p style="color:#57606a; margin-top:0; font-size:12px;">v{APP_VERSION} · Dell PowerEdge 서버 관리 도구</p>
-
-<div style="{S_TIP}">
-🚀 <b>3초 요약:</b> IP·계정 입력 → 조회 항목 체크 → [▶ 실행] → 결과 확인 → 필요시 저장
+{wrapper_open}
+<div style="padding-bottom:24px; margin-bottom:8px; border-bottom:1px solid #EAEDF0;">
+  <div style="font-size:28px; font-weight:800; color:#1F2328; letter-spacing:-0.5px;">
+    📖 iDRAC Toolkit 사용법
+  </div>
+  <div style="color:#57606A; font-size:12px; margin-top:4px;">
+    v{APP_VERSION} &nbsp;·&nbsp; Dell PowerEdge 서버 관리 도구
+  </div>
 </div>
 
-<div style="{S_H1}">1. 앱 소개</div>
-<p>Dell PowerEdge 서버의 <b>iDRAC Redfish API</b>를 통해 HW / FW / BIOS 정보를 조회하고,
-로그 추출·펌웨어 업데이트까지 한 화면에서 처리하는 도구입니다.</p>
-<ul>
-  <li><b>HW 정보</b> — 모델, CPU, 메모리, 팬, 스토리지, RAID, 디스크, PSU, NIC</li>
-  <li><b>FW 정보</b> — BIOS, iDRAC, LC, PERC, BOSS, CPLD, PSU, TPM 등</li>
+<div style="{BOX_TIP}">
+  🚀 <b>3초 요약</b><br>
+  IP·계정 입력 → 조회 항목 체크 → <b>[▶ 실행]</b> → 결과 확인 → 필요시 저장
+</div>
+
+<div style="{H1}">1. 앱 소개</div>
+<p style="{P}">
+  Dell PowerEdge 서버의 <b>iDRAC Redfish API</b> 를 통해 HW / FW / BIOS 정보를 조회하고,
+  로그 추출·펌웨어 업데이트까지 한 화면에서 처리하는 도구입니다.
+</p>
+<ul style="{LI}">
+  <li><b>HW</b> — 모델, CPU, 메모리, 팬, 스토리지, RAID, 디스크, PSU, NIC</li>
+  <li><b>FW</b> — BIOS, iDRAC, LC, PERC, BOSS, CPLD, PSU, TPM 등</li>
   <li><b>BIOS 설정</b> — System Profile, Processor, Integrated Devices, Power</li>
-  <li><b>로그 추출</b> — LCLog / SEL 을 엑셀로</li>
+  <li><b>로그 추출</b> — LCLog / SEL 을 엑셀로 저장</li>
   <li><b>펌웨어 업데이트</b> — 3단계 안전 확인 후 진행</li>
 </ul>
 
-<div style="{S_H1}">2. 기본 사용법</div>
-<div style="{S_H2}">① 접속 정보 입력</div>
-<ul>
-  <li><b>iDRAC IP</b> — 서버 iDRAC 관리 IP</li>
-  <li><b>Username</b> — 기본값 <code>root</code></li>
-  <li><b>Password</b> — [보기] 체크로 확인 가능</li>
+<div style="{H1}">2. 기본 사용법</div>
+
+<div style="{H2}">① 접속 정보 입력</div>
+<ul style="{LI}">
+  <li><b>iDRAC IP</b> &nbsp;— 서버 iDRAC 관리 IP</li>
+  <li><b>Username</b> &nbsp;— 기본값 <span style="{CODE}">root</span></li>
+  <li><b>Password</b> &nbsp;— <b>[보기]</b> 체크로 확인 가능</li>
 </ul>
 
-<div style="{S_H2}">② 조회 항목 선택</div>
-<ul>
-  <li><b>HW / FW / BIOS</b> — 중복 선택 가능 (예: HW+FW 만)</li>
-  <li><b>모든 항목 표시</b> — BIOS 전체 속성(150~475개) 그룹별 표시</li>
-  <li><b>5g 모드</b> — 운영 핵심 BIOS 15개 항목만 프리셋</li>
+<div style="{H2}">② 조회 항목 선택</div>
+<ul style="{LI}">
+  <li><b>HW / FW / BIOS</b> &nbsp;— 중복 선택 가능 (예: HW+FW 만)</li>
+  <li><b>모든 항목 표시</b> &nbsp;— BIOS 전체 속성(150~475개) 그룹별 표시</li>
+  <li><b>5g 모드</b> &nbsp;— 운영 핵심 BIOS 15개만 프리셋</li>
 </ul>
 
-<div style="{S_H2}">③ [▶ 실행] 클릭</div>
-<p>백그라운드에서 조회 → 결과창에 컬러 정리되어 표시.
-Service Tag / IP / 옵션 / 조회 시간은 항상 상단에 표시됩니다.</p>
+<div style="{H2}">③ [▶ 실행] 클릭</div>
+<p style="{P}">
+  백그라운드에서 조회 → 결과창에 컬러로 정리되어 표시됩니다.<br>
+  Service Tag / IP / 옵션 / 조회 시간은 <b>항상 상단</b>에 표시됩니다.
+</p>
 
-<div style="{S_H1}">3. 🔍 키 필터 사용법</div>
-<p>결과창 위 <b>키 필터</b> 입력칸에 키워드를 넣으면 매칭되는 BIOS 속성 / FW 컴포넌트만 표시됩니다.</p>
-<div style="{S_H2}">규칙</div>
-<ul>
-  <li><b>대소문자 무시</b> — <code>proc</code> = <code>Proc</code> = <code>PROC</code></li>
-  <li><b>부분 일치</b> — <code>Mem</code> → <code>Memory</code>, <code>MemFrequency</code>, <code>MemPatrolScrub</code></li>
-  <li><b>여러 개</b> — 콤마 / 공백으로 구분: <code>Mem, Boot, Pxe</code></li>
-  <li><b>와일드카드 *</b> — <code>Proc*</code> = "Proc로 시작" 만</li>
+<div style="{H1}">3. 🔍 키 필터 사용법</div>
+<p style="{P}">
+  결과창 위 <b>키 필터</b> 입력칸에 키워드를 넣으면 매칭되는 BIOS 속성 / FW 컴포넌트만 표시됩니다.
+</p>
+
+<div style="{H2}">규칙</div>
+<ul style="{LI}">
+  <li><b>대소문자 무시</b> &nbsp;<span style="{CODE}">proc</span> = <span style="{CODE}">Proc</span> = <span style="{CODE}">PROC</span></li>
+  <li><b>부분 일치</b> &nbsp;<span style="{CODE}">Mem</span> → Memory, MemFrequency, MemPatrolScrub</li>
+  <li><b>여러 개</b> &nbsp;콤마/공백 구분 — <span style="{CODE}">Mem, Boot, Pxe</span></li>
+  <li><b>와일드카드 *</b> &nbsp;<span style="{CODE}">Proc*</span> = "Proc로 시작"만</li>
 </ul>
-<div style="{S_H2}">바로 복사해 쓰는 예시</div>
-<table cellspacing="0" cellpadding="8" style="border-collapse:collapse; width:100%;">
-<tr style="background:#0E639C; color:white;"><th align="left" style="padding:8px 12px;">입력 키워드</th><th align="left" style="padding:8px 12px;">추출 항목</th></tr>
-<tr><td style="padding:6px 12px; font-family:Menlo,monospace;">Mem*, Dimm*, Numa</td><td style="padding:6px 12px;">메모리 관련 모두</td></tr>
-<tr style="background:#F6F8FA;"><td style="padding:6px 12px; font-family:Menlo,monospace;">Proc*, Cpu*, Turbo</td><td style="padding:6px 12px;">CPU/프로세서 관련</td></tr>
-<tr><td style="padding:6px 12px; font-family:Menlo,monospace;">Boot*, Uefi, SecureBoot</td><td style="padding:6px 12px;">부팅 관련</td></tr>
-<tr style="background:#F6F8FA;"><td style="padding:6px 12px; font-family:Menlo,monospace;">Pxe*, Network*, Http*</td><td style="padding:6px 12px;">네트워크/PXE</td></tr>
-<tr><td style="padding:6px 12px; font-family:Menlo,monospace;">Tpm*, Sec*, Aes</td><td style="padding:6px 12px;">보안/TPM</td></tr>
-<tr style="background:#F6F8FA;"><td style="padding:6px 12px; font-family:Menlo,monospace;">Power*, AcPwr*, Energy</td><td style="padding:6px 12px;">전원</td></tr>
-<tr><td style="padding:6px 12px; font-family:Menlo,monospace;">Virt*, Sriov, Iommu</td><td style="padding:6px 12px;">가상화</td></tr>
-<tr style="background:#F6F8FA;"><td style="padding:6px 12px; font-family:Menlo,monospace;">BIOS, iDRAC, PERC, BOSS</td><td style="padding:6px 12px;">특정 펌웨어만</td></tr>
-<tr><td style="padding:6px 12px; font-family:Menlo,monospace;">NIC, Broadcom, Intel</td><td style="padding:6px 12px;">NIC 펌웨어</td></tr>
-<tr style="background:#F6F8FA;"><td style="padding:6px 12px; font-family:Menlo,monospace;">Disk*, Drive</td><td style="padding:6px 12px;">디스크 펌웨어</td></tr>
+
+<div style="{H2}">바로 복사해 쓰는 예시</div>
+<table style="{TABLE}">
+  <tr><th style="{TH}">입력 키워드</th><th style="{TH}">추출 항목</th></tr>
+  <tr><td style="{TD} font-family:Menlo,monospace; color:#0969DA;">Mem*, Dimm*, Numa</td><td style="{TD}">메모리 관련 모두</td></tr>
+  <tr><td style="{TD} font-family:Menlo,monospace; color:#0969DA; background:#F6F8FA;">Proc*, Cpu*, Turbo</td><td style="{TD} background:#F6F8FA;">CPU/프로세서 관련</td></tr>
+  <tr><td style="{TD} font-family:Menlo,monospace; color:#0969DA;">Boot*, Uefi, SecureBoot</td><td style="{TD}">부팅 관련</td></tr>
+  <tr><td style="{TD} font-family:Menlo,monospace; color:#0969DA; background:#F6F8FA;">Pxe*, Network*, Http*</td><td style="{TD} background:#F6F8FA;">네트워크 / PXE</td></tr>
+  <tr><td style="{TD} font-family:Menlo,monospace; color:#0969DA;">Tpm*, Sec*, Aes</td><td style="{TD}">보안 / TPM</td></tr>
+  <tr><td style="{TD} font-family:Menlo,monospace; color:#0969DA; background:#F6F8FA;">Power*, AcPwr*, Energy</td><td style="{TD} background:#F6F8FA;">전원</td></tr>
+  <tr><td style="{TD} font-family:Menlo,monospace; color:#0969DA;">Virt*, Sriov, Iommu</td><td style="{TD}">가상화</td></tr>
+  <tr><td style="{TD} font-family:Menlo,monospace; color:#0969DA; background:#F6F8FA;">BIOS, iDRAC, PERC, BOSS</td><td style="{TD} background:#F6F8FA;">특정 펌웨어만</td></tr>
+  <tr><td style="{TD} font-family:Menlo,monospace; color:#0969DA;">NIC, Broadcom, Intel</td><td style="{TD}">NIC 펌웨어</td></tr>
+  <tr><td style="{TD} font-family:Menlo,monospace; color:#0969DA; background:#F6F8FA;">Disk*, Drive</td><td style="{TD} background:#F6F8FA;">디스크 펌웨어</td></tr>
 </table>
-<div style="{S_TIP}">💡 <b>모든 항목 표시</b> 체크박스를 같이 켜면 검색 범위가 BIOS 전체로 넓어져 필터가 가장 잘 동작합니다.</div>
 
-<div style="{S_H1}">4. 📊 엑셀로 저장</div>
-<p>결과창 위 <b>[📊 엑셀로 저장]</b> 클릭 → 저장 위치 선택 → 완료.</p>
-<ul>
-  <li>시트명: <b>Service Tag 기준</b> (예: <code>ABCD123</code>)</li>
-  <li>HW/FW/BIOS 모두 <b>한 시트에 통합</b> 저장</li>
-  <li>같은 파일을 다시 선택하면 다른 서버 결과가 <b>추가 시트</b> 로 누적</li>
-  <li>디자인 톤은 앱 화면과 동일 (진파랑 헤더 / 네이비 큰섹션 / 연파랑 소섹션)</li>
+<div style="{BOX_TIP}">
+  💡 <b>모든 항목 표시</b> 체크박스를 같이 켜면 검색 범위가 BIOS 전체로 넓어져 필터가 가장 잘 동작합니다.
+</div>
+
+<div style="{H1}">4. 📊 엑셀로 저장</div>
+<p style="{P}">
+  결과창 위 <b>[📊 엑셀로 저장]</b> 클릭 → 저장 위치 선택 → 완료.
+</p>
+<ul style="{LI}">
+  <li>시트명은 <b>Service Tag 기준</b> — 예: <span style="{CODE}">ABCD123</span></li>
+  <li>HW / FW / BIOS 모두 <b>한 시트에 통합</b> 저장</li>
+  <li>같은 파일을 다시 선택하면 다른 서버 결과가 <b>추가 시트로 누적</b></li>
+  <li>디자인 톤은 앱 화면과 동일 (진파랑 / 네이비 / 연파랑)</li>
 </ul>
 
-<div style="{S_H1}">5. 📥 로그 추출 (LCLog / SEL)</div>
-<p><b>[📥 로그 추출]</b> 버튼 → 로그 종류 선택 → 진행률 표시 → 저장 위치 지정.</p>
-<ul>
-  <li><b>LCLog</b> — 펌웨어 업데이트, 설정 변경, 부팅, 에러 이력</li>
-  <li><b>SEL</b> — PSU / FAN / Memory ECC 등 하드웨어 이벤트</li>
+<div style="{H1}">5. 📥 로그 추출 (LCLog / SEL)</div>
+<p style="{P}">
+  <b>[📥 로그 추출]</b> 버튼 → 로그 종류 선택 → 진행률 표시 → 저장 위치 지정.
+</p>
+<ul style="{LI}">
+  <li><b>LCLog</b> &nbsp;— 펌웨어 업데이트, 설정 변경, 부팅, 에러 이력</li>
+  <li><b>SEL</b> &nbsp;— PSU / FAN / Memory ECC 등 하드웨어 이벤트</li>
   <li>Severity 별 <b>자동 색상</b> — 🔴 Critical / 🟡 Warning / 🟢 OK</li>
   <li>진행률 실시간 표시, 취소 가능</li>
 </ul>
 
-<div style="{S_H1}">6. 🔧 펌웨어 업데이트</div>
-<div style="{S_DANGER}">
-⚠️ <b>위험한 작업입니다.</b><br>
-• 잘못된 펌웨어 → 부팅 불가 상태 가능<br>
-• BIOS 업데이트는 자동 재부팅 → 서비스 중단<br>
-• 업데이트 중 <b>전원 절대 금지</b>
+<div style="{H1}">6. 🔧 펌웨어 업데이트</div>
+<div style="{BOX_DANGER}">
+  ⚠️ <b>위험한 작업입니다.</b><br>
+  • 잘못된 펌웨어 → 부팅 불가 상태 가능<br>
+  • BIOS 업데이트는 자동 재부팅 → 서비스 중단<br>
+  • 업데이트 중 <b>전원 절대 금지</b>
 </div>
-<p><b>4단계 안전 프로세스</b>:</p>
-<ol>
+<p style="{P}"><b>4단계 안전 프로세스</b>:</p>
+<ol style="{LI}">
   <li><b>위험 경고 + 3개 체크</b> — 유지보수 시간 / 백업 완료 / Dell 공식 펌웨어 확인</li>
   <li><b>파일 선택 + 적용 시점</b> — 즉시(Immediate) 또는 다음 재부팅 시(OnReset)</li>
-  <li><b>최종 확인</b> — <code>UPDATE</code> 대문자 타이핑</li>
+  <li><b>최종 확인</b> — <span style="{CODE}">UPDATE</span> 대문자 타이핑</li>
   <li><b>진행률 표시</b> — 파일 업로드 → iDRAC 적용 (5초 간격 폴링)</li>
 </ol>
 
-<div style="{S_H1}">7. 지원 모델</div>
-<p>표준 Redfish API 를 쓰는 <b>모든 Dell PowerEdge 모델 자동 감지</b>:</p>
-<table cellspacing="0" cellpadding="8" style="border-collapse:collapse; width:100%;">
-<tr style="background:#264F78; color:white;"><th align="left" style="padding:8px 12px;">세대</th><th align="left" style="padding:8px 12px;">모델 예시</th></tr>
-<tr><td style="padding:6px 12px; background:#D5E5F2; color:#0E639C; font-weight:600;">14G</td><td style="padding:6px 12px;">R640, R740, R740xd, R840, R940</td></tr>
-<tr><td style="padding:6px 12px; background:#D5E5F2; color:#0E639C; font-weight:600;">15G</td><td style="padding:6px 12px;">R650, R750, R6515, R7515, R6525, R7525</td></tr>
-<tr><td style="padding:6px 12px; background:#D5E5F2; color:#0E639C; font-weight:600;">16G</td><td style="padding:6px 12px;">R660, R760, R6615, R7615, R6625, R7625</td></tr>
-<tr><td style="padding:6px 12px; background:#D5E5F2; color:#0E639C; font-weight:600;">블레이드</td><td style="padding:6px 12px;">MX740c, MX750c, MX760c</td></tr>
+<div style="{H1}">7. 지원 모델</div>
+<p style="{P}">
+  표준 Redfish API 를 쓰는 <b>모든 Dell PowerEdge 모델 자동 감지</b>
+</p>
+<table style="{TABLE}">
+  <tr><th style="{TH}" width="90">세대</th><th style="{TH}">모델 예시</th></tr>
+  <tr><td style="{TD} color:#0969DA; font-weight:600;">14G</td><td style="{TD}">R640, R740, R740xd, R840, R940</td></tr>
+  <tr><td style="{TD} color:#0969DA; font-weight:600; background:#F6F8FA;">15G</td><td style="{TD} background:#F6F8FA;">R650, R750, R6515, R7515, R6525, R7525</td></tr>
+  <tr><td style="{TD} color:#0969DA; font-weight:600;">16G</td><td style="{TD}">R660, R760, R6615, R7615, R6625, R7625</td></tr>
+  <tr><td style="{TD} color:#0969DA; font-weight:600; background:#F6F8FA;">블레이드</td><td style="{TD} background:#F6F8FA;">MX740c, MX750c, MX760c</td></tr>
 </table>
 
-<div style="{S_H1}">8. 문제 해결 (FAQ)</div>
+<div style="{H1}">8. 문제 해결 (FAQ)</div>
 
-<div style="{S_H2}">Q. 한글 비밀번호로 로그인이 안 돼요</div>
-<p>v3.0.0부터 UTF-8 Basic Auth 로 변경되어 한글/특수문자 비밀번호도 지원합니다.</p>
+<div style="{H3}">Q. 한글 비밀번호로 로그인이 안 돼요</div>
+<p style="{P}">
+  v3.0.0부터 UTF-8 Basic Auth 로 변경되어 한글 / 특수문자 비밀번호도 지원합니다.
+</p>
 
-<div style="{S_H2}">Q. HTTP 503 응답을 받았어요</div>
-<p>iDRAC 이 일시적 응답 불가 상태입니다. iDRAC 부팅 중이거나 펌웨어 업데이트 중일 수 있어요. 1~2분 기다린 후 다시 [실행].</p>
+<div style="{H3}">Q. HTTP 503 응답을 받았어요</div>
+<p style="{P}">
+  iDRAC 이 일시적 응답 불가 상태입니다. 부팅 중이거나 펌웨어 업데이트 중일 수 있어요.<br>
+  1~2분 기다린 후 다시 <b>[실행]</b>.
+</p>
 
-<div style="{S_H2}">Q. 결과창이 비어 있어요</div>
-<p>체크박스 (HW/FW/BIOS) 중 최소 하나는 켜야 합니다.</p>
+<div style="{H3}">Q. 결과창이 비어 있어요</div>
+<p style="{P}">체크박스 (HW / FW / BIOS) 중 최소 하나는 켜야 합니다.</p>
 
-<div style="{S_H2}">Q. 키 필터를 입력했는데 0개 나와요</div>
-<p>기본 모드에서는 14개 핵심 항목 안에서만 찾아서 매칭이 적습니다. <b>[모든 항목 표시]</b> 를 켜고 다시 시도하세요.</p>
+<div style="{H3}">Q. 키 필터를 입력했는데 0개 나와요</div>
+<p style="{P}">
+  기본 모드에서는 14개 핵심 항목 안에서만 찾아서 매칭이 적습니다.<br>
+  <b>[모든 항목 표시]</b> 를 켜고 다시 시도하세요.
+</p>
 
-<div style="{S_H2}">Q. macOS "손상됨" 경고가 떠요</div>
-<p>터미널: <code>xattr -cr "/Applications/iDRAC Toolkit.app"</code></p>
+<div style="{H3}">Q. macOS "손상됨" 경고가 떠요</div>
+<p style="{P}">터미널: <span style="{CODE}">xattr -cr "/Applications/iDRAC Toolkit.app"</span></p>
 
-<div style="{S_H2}">Q. Windows SmartScreen 경고가 떠요</div>
-<p>"추가 정보" → "실행" 클릭 한 번만 하면 됩니다.</p>
+<div style="{H3}">Q. Windows SmartScreen 경고가 떠요</div>
+<p style="{P}">"추가 정보" → "실행" 클릭 한 번만 하면 됩니다.</p>
 
-<hr style="border:0; border-top:1px solid #d0d7de; margin:20px 0;">
-<div style="text-align:center; color:#57606a; font-size:12px; padding:12px 0;">
-  📮 버그 리포트 / 기능 제안: 도구바 [❓ 문의] 버튼 → GitHub Issues
-  <br><br>
-  <span style="font-size:10px;">iDRAC Toolkit v{APP_VERSION} · Made by longchiri</span>
+<div style="text-align:center; color:#57606A; font-size:11px; padding:40px 0 10px 0; margin-top:40px; border-top:1px solid #EAEDF0;">
+  📮 버그 리포트 / 기능 제안은 도구바 <b>[❓ 문의]</b> 버튼<br><br>
+  <span style="font-size:10px; color:#8C959F;">iDRAC Toolkit v{APP_VERSION} · Made by longchiri</span>
 </div>
+{wrapper_close}
 """
 
     # ---------- 설정 저장/복원 ----------
