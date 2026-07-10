@@ -2699,16 +2699,377 @@ class MainWindow(QMainWindow):
         help_view = QTextBrowser()
         help_view.setOpenExternalLinks(True)
         help_view.setStyleSheet(
-            "QTextBrowser { background:white; border:0; padding:20px 26px; }"
+            "QTextBrowser { background:#F6F8FA; border:0; padding:0; }"
+        )
+        help_view.document().setDefaultStyleSheet(
+            "body { font-family: -apple-system, BlinkMacSystemFont, 'Malgun Gothic', sans-serif; }"
         )
         help_view.setHtml(self._help_html())
         layout.addWidget(help_view)
         return wrap
 
+    def _help_html_OLD(self):
+        """(구버전 — 사용 안 함)"""
+        return ""
+
     def _help_html(self):
-        """앱 내장 사용법 — 노션/GitHub Docs 톤의 미니멀 디자인
-           (max-width 720px, subtle 헤더, 여유로운 여백)
+        """앱 내장 사용법 — Qt QTextBrowser 호환 table 기반 카드 UI
+           (max-width 강제, 카드형 섹션, 아이콘 뱃지)
         """
+        # ─── 스타일 정의 ───
+        # 색깔
+        C_BG = "#F6F8FA"
+        C_CARD = "#FFFFFF"
+        C_TEXT = "#1F2328"
+        C_TEXT2 = "#57606A"
+        C_BLUE = "#0969DA"
+        C_NAVY = "#264F78"
+        C_LIGHTBLUE = "#DDF4FF"
+        C_BORDER = "#D0D7DE"
+        C_ORANGE = "#E8A317"
+        C_DANGER = "#D1242F"
+        C_DANGER_BG = "#FFEBE9"
+        C_TIP_BG = "#DDF4FF"
+        C_TIP_FG = "#0550AE"
+        C_WARN_BG = "#FFF8E1"
+        C_WARN_FG = "#7A5A00"
+
+        # 헬퍼 — 큰 섹션 (번호 원 + 제목)
+        def section(num, title):
+            return (
+                f'<table cellpadding="0" cellspacing="0" style="margin:40px 0 12px 0;">'
+                f'<tr>'
+                f'<td valign="middle" style="background:{C_BLUE}; color:white; '
+                f'width:36px; height:36px; text-align:center; '
+                f'font-size:16px; font-weight:800; border-radius:18px;">{num}</td>'
+                f'<td valign="middle" style="padding-left:14px; color:{C_TEXT}; '
+                f'font-size:20px; font-weight:700; letter-spacing:-0.3px;">{title}</td>'
+                f'</tr>'
+                f'</table>'
+            )
+
+        # 헬퍼 — 소섹션 (연파랑 좌측바 + 파란 텍스트)
+        def subsection(title):
+            return (
+                f'<table cellpadding="0" cellspacing="0" width="100%" style="margin:22px 0 10px 0;">'
+                f'<tr>'
+                f'<td width="4" bgcolor="{C_BLUE}" style="background:{C_BLUE};"> </td>'
+                f'<td style="padding:2px 0 2px 12px; color:{C_BLUE}; '
+                f'font-size:14px; font-weight:700;">{title}</td>'
+                f'</tr>'
+                f'</table>'
+            )
+
+        # 헬퍼 — 카드 (배경 흰색 + 얇은 테두리)
+        def card(inner_html):
+            return (
+                f'<table cellpadding="0" cellspacing="0" width="100%" '
+                f'style="margin:8px 0 12px 0;">'
+                f'<tr>'
+                f'<td bgcolor="{C_CARD}" style="background:{C_CARD}; '
+                f'border:1px solid {C_BORDER}; border-radius:8px; padding:16px 20px;">'
+                f'{inner_html}</td>'
+                f'</tr></table>'
+            )
+
+        # 헬퍼 — 팁/경고/위험 박스
+        def box(bg_color, fg_color, border_color, icon, title, body):
+            return (
+                f'<table cellpadding="0" cellspacing="0" width="100%" '
+                f'style="margin:14px 0;">'
+                f'<tr>'
+                f'<td width="4" bgcolor="{border_color}" style="background:{border_color};"> </td>'
+                f'<td bgcolor="{bg_color}" style="background:{bg_color}; '
+                f'padding:14px 18px; color:{fg_color};">'
+                f'<div style="font-weight:700; font-size:13px; margin-bottom:6px;">{icon}&nbsp; {title}</div>'
+                f'<div style="font-size:12.5px; line-height:1.7;">{body}</div>'
+                f'</td></tr></table>'
+            )
+
+        # 헬퍼 — 정의 리스트 (라벨 : 값)
+        def def_list(pairs):
+            rows = ""
+            for label, val in pairs:
+                rows += (
+                    f'<tr>'
+                    f'<td valign="top" style="padding:5px 16px 5px 0; '
+                    f'color:{C_TEXT}; font-weight:700; font-size:13px; white-space:nowrap;">{label}</td>'
+                    f'<td valign="top" style="padding:5px 0; color:{C_TEXT2}; '
+                    f'font-size:13px; line-height:1.7;">{val}</td>'
+                    f'</tr>'
+                )
+            return f'<table cellpadding="0" cellspacing="0">{rows}</table>'
+
+        # 헬퍼 — 아이콘 리스트 (아이콘 + 라벨 + 설명)
+        def icon_list(items):
+            # items = [(emoji, label, desc), ...]
+            rows = ""
+            for i, (emoji, label, desc) in enumerate(items):
+                border = f'border-top:1px solid #EAEDF0;' if i > 0 else ''
+                rows += (
+                    f'<tr>'
+                    f'<td valign="top" style="width:36px; padding:12px 6px 12px 0; '
+                    f'font-size:18px; {border}">{emoji}</td>'
+                    f'<td valign="top" style="padding:12px 12px 12px 0; '
+                    f'color:{C_TEXT}; font-weight:700; font-size:13px; width:90px; {border}">{label}</td>'
+                    f'<td valign="top" style="padding:12px 0; color:{C_TEXT2}; '
+                    f'font-size:12.5px; line-height:1.6; {border}">{desc}</td>'
+                    f'</tr>'
+                )
+            return f'<table cellpadding="0" cellspacing="0" width="100%">{rows}</table>'
+
+        # 헬퍼 — 코드 인라인
+        def code(text):
+            return (f'<span style="background:#EFF1F3; color:{C_BLUE}; '
+                    f'padding:2px 7px; border-radius:3px; font-family:Menlo,Consolas,monospace; '
+                    f'font-size:12px;">{text}</span>')
+
+        # ============================================================
+        # 콘텐츠 조립
+        # ============================================================
+
+        # ── 타이틀 헤더 (그라디언트 느낌 카드) ──
+        header = (
+            f'<table cellpadding="0" cellspacing="0" width="100%">'
+            f'<tr>'
+            f'<td bgcolor="{C_NAVY}" style="background:{C_NAVY}; '
+            f'padding:26px 28px; border-radius:8px;">'
+            f'<div style="color:white; font-size:26px; font-weight:800; '
+            f'letter-spacing:-0.5px;">📖  iDRAC Toolkit 사용법</div>'
+            f'<div style="color:#B6D4F0; font-size:12.5px; margin-top:6px;">'
+            f'v{APP_VERSION} &nbsp;·&nbsp; Dell PowerEdge 서버 관리 도구</div>'
+            f'</td></tr></table>'
+        )
+
+        # ── 3초 요약 ──
+        tldr = box(
+            C_TIP_BG, C_TIP_FG, C_BLUE, "🚀", "3초 요약",
+            f"IP·계정 입력 &nbsp;→&nbsp; 조회 항목 체크 &nbsp;→&nbsp; "
+            f"<b>[▶ 실행]</b> &nbsp;→&nbsp; 결과 확인 &nbsp;→&nbsp; 필요시 저장"
+        )
+
+        # ── 1. 앱 소개 ──
+        s1_content = icon_list([
+            ("🖥", "HW", "모델, CPU, 메모리, 팬, 스토리지, RAID, 디스크, PSU, NIC"),
+            ("🔧", "FW", "BIOS, iDRAC, LC, PERC, BOSS, CPLD, PSU, TPM 등"),
+            ("⚙️", "BIOS 설정", "System Profile, Processor, Integrated Devices, Power"),
+            ("📥", "로그 추출", "LCLog / SEL 을 컬러 엑셀로 저장"),
+            ("🔧", "펌웨어 업데이트", "3단계 안전 확인 후 진행"),
+        ])
+        s1 = section("1", "앱 소개") + card(s1_content)
+
+        # ── 2. 기본 사용법 ──
+        s2_1 = subsection("① 접속 정보 입력") + card(def_list([
+            ("iDRAC IP", "서버 iDRAC 관리 IP"),
+            ("Username", f"기본값 {code('root')}"),
+            ("Password", f"{code('☑ 보기')} 체크로 확인 가능"),
+        ]))
+        s2_2 = subsection("② 조회 항목 선택") + card(def_list([
+            ("HW / FW / BIOS", "중복 선택 가능 (예: HW+FW 만)"),
+            ("모든 항목 표시", "BIOS 전체 속성 (150~475개) 그룹별 표시"),
+            ("5g 모드", "운영 핵심 BIOS 15개 항목만 프리셋"),
+        ]))
+        s2_3 = subsection("③ [▶ 실행] 클릭") + card(
+            f'<div style="color:{C_TEXT2}; font-size:13px; line-height:1.8;">'
+            f'백그라운드에서 조회 → 결과창에 컬러로 정리되어 표시됩니다.<br>'
+            f'<b>Service Tag / IP / 옵션 / 조회 시간</b>은 항상 상단에 표시됩니다.'
+            f'</div>'
+        )
+        s2 = section("2", "기본 사용법") + s2_1 + s2_2 + s2_3
+
+        # ── 3. 키 필터 ──
+        rules = card(def_list([
+            ("대소문자 무시", f"{code('proc')} = {code('Proc')} = {code('PROC')}"),
+            ("부분 일치", f"{code('Mem')} → Memory, MemFrequency, MemPatrolScrub"),
+            ("여러 개", f"콤마/공백 구분 — {code('Mem, Boot, Pxe')}"),
+            ("와일드카드 *", f"{code('Proc*')} = \"Proc로 시작\" 만"),
+        ]))
+
+        # 키 필터 예시 표 (더 예쁘게)
+        examples_data = [
+            ("Mem*, Dimm*, Numa", "메모리 관련 모두"),
+            ("Proc*, Cpu*, Turbo", "CPU/프로세서 관련"),
+            ("Boot*, Uefi, SecureBoot", "부팅 관련"),
+            ("Pxe*, Network*, Http*", "네트워크 / PXE"),
+            ("Tpm*, Sec*, Aes", "보안 / TPM"),
+            ("Power*, AcPwr*, Energy", "전원"),
+            ("Virt*, Sriov, Iommu", "가상화"),
+            ("BIOS, iDRAC, PERC, BOSS", "특정 펌웨어만"),
+            ("NIC, Broadcom, Intel", "NIC 펌웨어"),
+            ("Disk*, Drive", "디스크 펌웨어"),
+        ]
+        ex_rows = ""
+        for i, (k, v) in enumerate(examples_data):
+            bg = "#F6F8FA" if i % 2 == 1 else "#FFFFFF"
+            ex_rows += (
+                f'<tr>'
+                f'<td bgcolor="{bg}" style="background:{bg}; padding:8px 14px; '
+                f'font-family:Menlo,Consolas,monospace; font-size:12px; '
+                f'color:{C_BLUE}; width:50%;">{k}</td>'
+                f'<td bgcolor="{bg}" style="background:{bg}; padding:8px 14px; '
+                f'color:{C_TEXT2}; font-size:12.5px;">{v}</td>'
+                f'</tr>'
+            )
+        ex_table = (
+            f'<table cellpadding="0" cellspacing="0" width="100%" '
+            f'style="border:1px solid {C_BORDER}; border-radius:6px;">'
+            f'<tr><td bgcolor="{C_NAVY}" style="background:{C_NAVY}; color:white; '
+            f'padding:8px 14px; font-size:12px; font-weight:700; width:50%;">입력 키워드</td>'
+            f'<td bgcolor="{C_NAVY}" style="background:{C_NAVY}; color:white; '
+            f'padding:8px 14px; font-size:12px; font-weight:700;">추출 항목</td></tr>'
+            f'{ex_rows}'
+            f'</table>'
+        )
+
+        tip_filter = box(
+            C_TIP_BG, C_TIP_FG, C_BLUE, "💡", "가장 잘 쓰는 방법",
+            f"<b>모든 항목 표시</b> 체크박스를 같이 켜면 검색 범위가 BIOS 전체로 넓어져 "
+            f"필터가 가장 잘 동작합니다."
+        )
+
+        s3 = (
+            section("3", "🔍 키 필터 사용법") +
+            f'<div style="color:{C_TEXT2}; font-size:13px; line-height:1.8; margin-bottom:10px;">'
+            f'결과창 위 <b>키 필터</b> 입력칸에 키워드를 넣으면 매칭되는 BIOS 속성 / FW 컴포넌트만 표시됩니다.'
+            f'</div>' +
+            subsection("규칙 4가지") + rules +
+            subsection("바로 복사해 쓰는 예시 10가지") +
+            f'<div style="margin:8px 0 14px 0;">{ex_table}</div>' +
+            tip_filter
+        )
+
+        # ── 4. 엑셀 저장 ──
+        s4 = section("4", "📊 엑셀로 저장") + card(
+            f'<div style="color:{C_TEXT}; font-size:13px; line-height:1.8;">'
+            f'결과창 위 <b>[📊 엑셀로 저장]</b> 클릭 → 저장 위치 선택 → 완료.'
+            f'</div>' +
+            def_list([
+                ("시트명", f"<b>Service Tag 기준</b> 예: {code('ABCD123')}"),
+                ("통합", "HW / FW / BIOS 모두 <b>한 시트에 통합</b> 저장"),
+                ("누적", "같은 파일을 다시 선택하면 <b>다른 서버 시트가 추가</b>"),
+                ("디자인", "앱 화면과 동일 톤 (진파랑 / 네이비 / 연파랑)"),
+            ])
+        )
+
+        # ── 5. 로그 추출 ──
+        s5 = section("5", "📥 로그 추출 (LCLog / SEL)") + card(
+            f'<div style="color:{C_TEXT}; font-size:13px; line-height:1.8;">'
+            f'<b>[📥 로그 추출]</b> → 로그 종류 선택 → 진행률 표시 → 저장 위치 지정.'
+            f'</div>' +
+            def_list([
+                ("LCLog", "펌웨어 업데이트, 설정 변경, 부팅, 에러 이력"),
+                ("SEL", "PSU / FAN / Memory ECC 등 하드웨어 이벤트"),
+                ("색상", "🔴 Critical &nbsp; 🟡 Warning &nbsp; 🟢 OK"),
+                ("취소", "진행 중에도 취소 가능"),
+            ])
+        )
+
+        # ── 6. 펌웨어 업데이트 ──
+        danger = box(
+            C_DANGER_BG, C_DANGER, C_DANGER, "⚠️", "위험한 작업입니다",
+            "• 잘못된 펌웨어 → 부팅 불가 상태 가능<br>"
+            "• BIOS 업데이트는 자동 재부팅 → 서비스 중단<br>"
+            "• 업데이트 중 <b>전원 절대 금지</b>"
+        )
+        fw_steps = card(
+            f'<div style="color:{C_TEXT}; font-size:13px; font-weight:700; margin-bottom:12px;">'
+            f'4단계 안전 프로세스</div>' +
+            icon_list([
+                ("①", "위험 경고", "3개 체크박스 확인 — 유지보수 시간 / 백업 완료 / Dell 공식 펌웨어"),
+                ("②", "파일 선택", f"적용 시점 선택 — 즉시({code('Immediate')}) 또는 다음 재부팅 시({code('OnReset')})"),
+                ("③", "최종 확인", f"{code('UPDATE')} 대문자 타이핑 요구"),
+                ("④", "진행률", "파일 업로드 → iDRAC 적용 (5초 간격 폴링)"),
+            ])
+        )
+        s6 = section("6", "🔧 펌웨어 업데이트") + danger + fw_steps
+
+        # ── 7. 지원 모델 ──
+        models_data = [
+            ("14G", "R640, R740, R740xd, R840, R940"),
+            ("15G", "R650, R750, R6515, R7515, R6525, R7525"),
+            ("16G", "R660, R760, R6615, R7615, R6625, R7625"),
+            ("블레이드", "MX740c, MX750c, MX760c"),
+        ]
+        m_rows = ""
+        for i, (gen, mods) in enumerate(models_data):
+            bg = "#F6F8FA" if i % 2 == 1 else "#FFFFFF"
+            m_rows += (
+                f'<tr>'
+                f'<td bgcolor="{bg}" style="background:{bg}; padding:10px 16px; '
+                f'color:{C_BLUE}; font-weight:700; font-size:12.5px; width:80px;">{gen}</td>'
+                f'<td bgcolor="{bg}" style="background:{bg}; padding:10px 16px; '
+                f'color:{C_TEXT}; font-size:12.5px;">{mods}</td>'
+                f'</tr>'
+            )
+        m_table = (
+            f'<table cellpadding="0" cellspacing="0" width="100%" '
+            f'style="border:1px solid {C_BORDER}; border-radius:6px; margin-top:8px;">'
+            f'<tr><td bgcolor="{C_NAVY}" style="background:{C_NAVY}; color:white; '
+            f'padding:8px 16px; font-size:12px; font-weight:700;">세대</td>'
+            f'<td bgcolor="{C_NAVY}" style="background:{C_NAVY}; color:white; '
+            f'padding:8px 16px; font-size:12px; font-weight:700;">모델 예시</td></tr>'
+            f'{m_rows}</table>'
+        )
+        s7 = section("7", "지원 모델") + (
+            f'<div style="color:{C_TEXT2}; font-size:13px; margin-bottom:8px;">'
+            f'표준 Redfish API를 쓰는 <b>모든 Dell PowerEdge 모델 자동 감지</b>'
+            f'</div>{m_table}'
+        )
+
+        # ── 8. FAQ ──
+        faqs = [
+            ("한글 비밀번호로 로그인이 안 돼요",
+             "v3.0.0부터 UTF-8 Basic Auth 로 변경되어 한글 / 특수문자 비밀번호도 지원합니다."),
+            ("HTTP 503 응답을 받았어요",
+             "iDRAC 이 일시적 응답 불가 상태입니다. 부팅 중이거나 펌웨어 업데이트 중일 수 있어요. 1~2분 기다린 후 다시 [실행]."),
+            ("결과창이 비어 있어요",
+             "체크박스 (HW / FW / BIOS) 중 최소 하나는 켜야 합니다."),
+            ("키 필터를 입력했는데 0개 나와요",
+             "기본 모드에서는 14개 핵심 항목 안에서만 찾아서 매칭이 적습니다. [모든 항목 표시]를 켜고 다시 시도하세요."),
+            ("macOS \"손상됨\" 경고가 떠요",
+             f"터미널: {code('xattr -cr &quot;/Applications/iDRAC Toolkit.app&quot;')}<br>"
+             f"또는 앱과 함께 배포된 <b>install_mac.command</b> 스크립트를 더블클릭"),
+            ("Windows SmartScreen 경고가 떠요",
+             "\"추가 정보\" → \"실행\" 클릭 한 번만 하면 됩니다."),
+        ]
+        faq_cards = ""
+        for q, a in faqs:
+            faq_cards += card(
+                f'<div style="color:{C_TEXT}; font-weight:700; font-size:13.5px; '
+                f'margin-bottom:6px;">Q. {q}</div>'
+                f'<div style="color:{C_TEXT2}; font-size:12.5px; line-height:1.7;">A. {a}</div>'
+            )
+        s8 = section("8", "문제 해결 (FAQ)") + faq_cards
+
+        # ── 푸터 ──
+        footer = (
+            f'<div style="text-align:center; color:{C_TEXT2}; font-size:11px; '
+            f'padding:44px 0 12px 0; margin-top:32px; border-top:1px solid #EAEDF0;">'
+            f'📮 &nbsp;버그 리포트 · 기능 제안은 도구바 <b>[❓ 문의]</b> 버튼<br><br>'
+            f'<span style="font-size:10px; color:#8C959F;">'
+            f'iDRAC Toolkit v{APP_VERSION} &nbsp;·&nbsp; Made by longchiri</span>'
+            f'</div>'
+        )
+
+        # 모든 콘텐츠 하나로
+        body_content = header + tldr + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + footer
+
+        # ── 최외곽 table: 최대폭 720 + 중앙 정렬 + 좌우 여백 ──
+        return f"""
+<table cellpadding="0" cellspacing="0" width="100%" bgcolor="{C_BG}">
+  <tr>
+    <td align="center" style="padding:24px 12px 60px 12px;">
+      <table cellpadding="0" cellspacing="0" width="720" style="width:720px;">
+        <tr>
+          <td>
+            {body_content}
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+"""
         # 스타일 상수 — 톤 다운
         H1 = ("color:#1F2328; font-size:22px; font-weight:700; "
               "margin:44px 0 8px 0; padding-bottom:8px; "

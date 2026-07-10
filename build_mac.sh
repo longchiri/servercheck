@@ -69,12 +69,17 @@ pyinstaller \
   "${ENTRY}"
 
 echo ""
+echo "🟡 격리 속성 제거 + Ad-hoc 서명 적용 중..."
+xattr -cr "dist/${APP_NAME}.app" 2>/dev/null || true
+codesign --deep --force --sign - "dist/${APP_NAME}.app" 2>/dev/null || true
+
+echo ""
 echo "✅ 완료!"
 echo "   생성된 앱: $(pwd)/dist/${APP_NAME}.app"
 echo ""
 echo "💡 실행 방법:"
 echo "   open \"$(pwd)/dist/${APP_NAME}.app\""
 echo ""
-echo "💡 '확인되지 않은 개발자' 경고가 뜨면:"
-echo "   Finder 에서 앱 우클릭 → '열기' → 경고창에서 '열기' 한 번 더"
-echo "   또는: xattr -cr \"$(pwd)/dist/${APP_NAME}.app\""
+echo "💡 이 로컬 빌드는 자체 서명 + 격리 속성 제거된 상태입니다."
+echo "   만약 그래도 경고가 뜨면:"
+echo "   xattr -cr \"$(pwd)/dist/${APP_NAME}.app\""

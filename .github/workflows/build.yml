@@ -44,10 +44,24 @@ jobs:
             --add-data "iDRAC_Viewer.ico:." \
             dell_viewer.py
 
-      - name: .app 을 zip 으로 압축
+      - name: Ad-hoc 자체 서명 + 격리 속성 제거
+        run: |
+          # 격리 속성 제거 (다운로드 후 발생하는 경고 방지)
+          xattr -cr "dist/iDRAC Toolkit.app" || true
+          # Ad-hoc 자체 서명 (모든 내부 바이너리 재서명)
+          codesign --deep --force --sign - "dist/iDRAC Toolkit.app"
+          # 서명 확인
+          codesign --verify --verbose "dist/iDRAC Toolkit.app" || true
+
+      - name: install.command 스크립트 준비
+        run: |
+          cp install_mac.command dist/install_mac.command
+          chmod +x dist/install_mac.command
+
+      - name: .app + install.command 을 zip 으로 압축
         run: |
           cd dist
-          zip -r "iDRAC_Toolkit_macOS.zip" "iDRAC Toolkit.app"
+          zip -r "iDRAC_Toolkit_macOS.zip" "iDRAC Toolkit.app" "install_mac.command"
           ls -lh
 
       - name: macOS artifact 업로드
