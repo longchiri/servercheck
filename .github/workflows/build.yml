@@ -1,4 +1,4 @@
-name: Build Server Check
+name: Build iDRAC Toolkit
 
 # 언제 실행할지: push 또는 수동 트리거 또는 태그
 on:
@@ -36,8 +36,8 @@ jobs:
             --windowed \
             --noconfirm \
             --clean \
-            --name "Server Check" \
-            --osx-bundle-identifier "com.longchiri.serverCheck" \
+            --name "iDRAC Toolkit" \
+            --osx-bundle-identifier "com.longchiri.idracToolkit" \
             --icon iDRAC_Viewer.icns \
             --add-data "iDRAC_Viewer.icns:." \
             --add-data "iDRAC_Viewer.png:." \
@@ -47,14 +47,14 @@ jobs:
       - name: .app 을 zip 으로 압축
         run: |
           cd dist
-          zip -r "Server_Check_macOS.zip" "Server Check.app"
+          zip -r "iDRAC_Toolkit_macOS.zip" "iDRAC Toolkit.app"
           ls -lh
 
       - name: macOS artifact 업로드
         uses: actions/upload-artifact@v4
         with:
-          name: Server_Check_macOS
-          path: dist/Server_Check_macOS.zip
+          name: iDRAC_Toolkit_macOS
+          path: dist/iDRAC_Toolkit_macOS.zip
           retention-days: 30
 
   # ============================================================
@@ -84,7 +84,7 @@ jobs:
             --onefile `
             --noconfirm `
             --clean `
-            --name "Server_Check" `
+            --name "iDRAC_Toolkit" `
             --icon iDRAC_Viewer.ico `
             --add-data "iDRAC_Viewer.ico;." `
             --add-data "iDRAC_Viewer.png;." `
@@ -94,8 +94,8 @@ jobs:
       - name: Windows artifact 업로드
         uses: actions/upload-artifact@v4
         with:
-          name: Server_Check_Windows
-          path: dist/Server_Check.exe
+          name: iDRAC_Toolkit_Windows
+          path: dist/iDRAC_Toolkit.exe
           retention-days: 30
 
   # ============================================================

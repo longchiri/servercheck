@@ -14,7 +14,7 @@ REM ============================================================
 
 cd /d "%~dp0"
 
-set APP_NAME=Server_Check
+set APP_NAME=iDRAC_Toolkit
 set ENTRY=dell_viewer.py
 
 echo.

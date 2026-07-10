@@ -22,8 +22,8 @@ from typing import Callable, Optional, List, Tuple
 import requests
 from requests.auth import HTTPBasicAuth
 
-from PySide6.QtCore import Qt, QThread, Signal, QSettings
-from PySide6.QtGui import QFont, QFontDatabase, QAction, QKeySequence, QGuiApplication, QIcon, QPixmap
+from PySide6.QtCore import Qt, QThread, Signal, QSettings, QUrl
+from PySide6.QtGui import QFont, QFontDatabase, QAction, QKeySequence, QGuiApplication, QIcon, QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
     QComboBox, QSpinBox, QTextEdit, QTextBrowser, QVBoxLayout, QHBoxLayout,
@@ -108,8 +108,9 @@ except Exception:
     pass
 
 
-APP_NAME = "Server Check"
-APP_VERSION = "1.0.0"
+APP_NAME = "iDRAC Toolkit"
+APP_VERSION = "3.0.0"
+ISSUES_URL = "https://github.com/longchiri/servercheck/issues/new"
 
 # =========================================================
 #  iDRAC Redfish Inspector
@@ -2531,6 +2532,17 @@ class MainWindow(QMainWindow):
         self.fw_btn.clicked.connect(self.on_firmware_update)
         tools.addWidget(self.fw_btn)
 
+        # 문의 버튼 (도구바 오른쪽 끝)
+        self.contact_btn = QPushButton("❓ 문의")
+        self.contact_btn.setStyleSheet(
+            "QPushButton { background:#f6f8fa; color:#0969da; border:1px solid #d0d7de; "
+            "border-radius:6px; padding:6px 12px; font-weight:600; }"
+            "QPushButton:hover { background:#eaeef2; }"
+            "QPushButton:pressed { background:#d0d7de; }")
+        self.contact_btn.setToolTip("버그 리포트 / 개선 요청 (GitHub Issues)")
+        self.contact_btn.clicked.connect(self.on_contact)
+        tools.addWidget(self.contact_btn)
+
         self.clear_btn = QPushButton("지우기")
         self.clear_btn.clicked.connect(self._clear)
         tools.addWidget(self.clear_btn)
@@ -3058,6 +3070,33 @@ class MainWindow(QMainWindow):
             f"Job URI: {result.get('job_uri', '-')}\n"
             f"메시지: {result.get('message', '')}{reboot_msg}"
         )
+
+    # ============================================================
+    # ❓ 문의
+    # ============================================================
+    def on_contact(self):
+        box = QMessageBox(self)
+        box.setWindowTitle("문의하기")
+        box.setIcon(QMessageBox.Information)
+        box.setTextFormat(Qt.RichText)
+        box.setText(
+            "<b>📮 문의 / 버그 리포트</b><br><br>"
+            "버그, 개선 요청, 기능 제안은 <b>GitHub Issues</b> 로 남겨주세요.<br>"
+            "브라우저로 GitHub 페이지를 열까요?<br><br>"
+            f"<span style='color:#57606a; font-size:11px;'>이동 URL: <br>{ISSUES_URL}</span>"
+        )
+        open_btn = box.addButton("GitHub 열기", QMessageBox.AcceptRole)
+        copy_btn = box.addButton("URL 복사", QMessageBox.ActionRole)
+        cancel_btn = box.addButton("취소", QMessageBox.RejectRole)
+        box.setDefaultButton(open_btn)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked == open_btn:
+            QDesktopServices.openUrl(QUrl(ISSUES_URL))
+        elif clicked == copy_btn:
+            QApplication.clipboard().setText(ISSUES_URL)
+            self.status.showMessage("GitHub Issues URL 을 클립보드에 복사했습니다", 4000)
 
     def _on_fw_fail(self, kind: str, msg: str):
         if hasattr(self, 'fw_progress_dlg'):

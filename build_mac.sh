@@ -9,7 +9,7 @@
 # ============================================================
 set -e
 
-APP_NAME="Server Check"
+APP_NAME="iDRAC Toolkit"
 ENTRY="dell_viewer.py"
 BUNDLE_ID="com.longchiri.idracviewer"
 
