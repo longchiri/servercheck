@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
     QComboBox, QSpinBox, QTextEdit, QTextBrowser, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QMessageBox, QFileDialog, QCheckBox, QStatusBar,
-    QSizePolicy, QFrame, QDialog, QProgressBar,
+    QSizePolicy, QFrame, QDialog, QProgressBar, QTabWidget, QScrollArea,
 )
 
 
@@ -2296,6 +2296,90 @@ class FirmwareProgressDialog(QDialog):
         self.detail.setText(f"  {msg}")
 
 
+class ContactDialog(QDialog):
+    """문의 다이얼로그 — 버튼 순서: [GitHub 열기] [URL 복사] [취소]"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("문의하기")
+        self.setMinimumWidth(460)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 18)
+        layout.setSpacing(14)
+
+        # 아이콘 + 제목
+        title = QLabel("💬  문의 / 버그 리포트")
+        title.setStyleSheet("font-size:16px; font-weight:700; color:#1f2328;")
+        layout.addWidget(title)
+
+        desc = QLabel(
+            "버그 리포트, 기능 제안, 개선 요청은 <b>GitHub Issues</b> 로 남겨주세요.<br>"
+            "브라우저에서 새 이슈 작성 페이지가 열립니다."
+        )
+        desc.setTextFormat(Qt.RichText)
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color:#57606a; font-size:12px; line-height:1.6;")
+        layout.addWidget(desc)
+
+        # URL 카드
+        url_card = QLabel(f"<div style='color:#0969DA; font-family:Menlo,Consolas,monospace; font-size:11px;'>{ISSUES_URL}</div>")
+        url_card.setStyleSheet(
+            "background:#F6F8FA; border:1px solid #D0D7DE; border-radius:6px; "
+            "padding:10px 12px; color:#0969DA;"
+        )
+        url_card.setTextFormat(Qt.RichText)
+        url_card.setWordWrap(True)
+        layout.addWidget(url_card)
+
+        layout.addSpacing(4)
+
+        # 버튼 순서: [GitHub 열기] [URL 복사] [취소]
+        btns = QHBoxLayout()
+        btns.addStretch()
+
+        self.open_btn = QPushButton("🌐  GitHub 열기")
+        self.open_btn.setStyleSheet(
+            "QPushButton { background:#0969DA; color:white; border:0; "
+            "border-radius:6px; padding:8px 20px; font-weight:600; }"
+            "QPushButton:hover { background:#0860C9; }"
+            "QPushButton:pressed { background:#0757B9; }"
+        )
+        self.open_btn.setDefault(True)
+        self.open_btn.clicked.connect(self._open_github)
+        btns.addWidget(self.open_btn)
+
+        self.copy_btn = QPushButton("📋  URL 복사")
+        self.copy_btn.setStyleSheet(
+            "QPushButton { background:#F6F8FA; color:#1F2328; border:1px solid #D0D7DE; "
+            "border-radius:6px; padding:8px 16px; font-weight:600; }"
+            "QPushButton:hover { background:#EAEEF2; }"
+        )
+        self.copy_btn.clicked.connect(self._copy_url)
+        btns.addWidget(self.copy_btn)
+
+        self.cancel_btn = QPushButton("취소")
+        self.cancel_btn.setStyleSheet(
+            "QPushButton { background:transparent; color:#57606A; border:1px solid #D0D7DE; "
+            "border-radius:6px; padding:8px 16px; }"
+            "QPushButton:hover { background:#F6F8FA; }"
+        )
+        self.cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(self.cancel_btn)
+
+        layout.addLayout(btns)
+
+    def _open_github(self):
+        QDesktopServices.openUrl(QUrl(ISSUES_URL))
+        self.accept()
+
+    def _copy_url(self):
+        QApplication.clipboard().setText(ISSUES_URL)
+        # 임시 라벨로 복사됨 안내
+        original = self.copy_btn.text()
+        self.copy_btn.setText("✓  복사됨")
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(1500, lambda: self.copy_btn.setText(original))
+
+
 class LogProgressDialog(QDialog):
     """추출 진행률 표시"""
     cancelled = Signal()
@@ -2368,9 +2452,23 @@ class MainWindow(QMainWindow):
 
     # ---------- UI ----------
     def _build_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        root = QVBoxLayout(central)
+        # 최상위: 탭 위젯
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.setStyleSheet(
+            "QTabWidget::pane { border: 1px solid #d0d7de; border-radius:8px; background:white; top:-1px; }"
+            "QTabBar::tab { background:#f6f8fa; color:#57606a; padding:10px 24px; "
+            "  border:1px solid #d0d7de; border-bottom:0; "
+            "  border-top-left-radius:8px; border-top-right-radius:8px; "
+            "  margin-right:2px; font-size:13px; font-weight:600; }"
+            "QTabBar::tab:selected { background:white; color:#0969DA; }"
+            "QTabBar::tab:hover:!selected { background:#eaeef2; }"
+        )
+        self.setCentralWidget(self.tabs)
+
+        # ── 탭 1: 서버 정보 ──
+        server_tab = QWidget()
+        root = QVBoxLayout(server_tab)
         root.setContentsMargins(14, 14, 14, 10)
         root.setSpacing(10)
 
@@ -2390,7 +2488,7 @@ class MainWindow(QMainWindow):
         g.addWidget(QLabel("Password"), 0, 4)
         pw_wrap = QHBoxLayout()
         self.pw_in = QLineEdit(); self.pw_in.setEchoMode(QLineEdit.Password)
-        self.pw_in.setMaximumWidth(180)
+        self.pw_in.setMinimumWidth(220)
         pw_wrap.addWidget(self.pw_in)
         self.pw_show = QCheckBox("보기")
         self.pw_show.toggled.connect(
@@ -2560,6 +2658,176 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status)
         self.status.showMessage("대기 중")
 
+        # 서버 탭 등록
+        self.tabs.addTab(server_tab, "🖥  서버 정보")
+
+        # ── 탭 2: 사용법 ──
+        help_tab = self._build_help_tab()
+        self.tabs.addTab(help_tab, "📖  사용법")
+
+    def _build_help_tab(self):
+        wrap = QWidget()
+        layout = QVBoxLayout(wrap)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        help_view = QTextBrowser()
+        help_view.setOpenExternalLinks(True)
+        help_view.setStyleSheet(
+            "QTextBrowser { background:white; border:0; padding:20px 26px; }"
+        )
+        help_view.setHtml(self._help_html())
+        layout.addWidget(help_view)
+        return wrap
+
+    def _help_html(self):
+        """앱 내장 사용법 (PDF와 동일 흐름)"""
+        # 스타일
+        S_H1 = ("background:#264F78; color:white; padding:10px 16px; "
+                "font-size:16px; font-weight:700; margin-top:20px; margin-bottom:10px;")
+        S_H2 = ("background:#D5E5F2; color:#0E639C; padding:8px 14px; "
+                "font-size:13px; font-weight:700; margin-top:16px; margin-bottom:8px; "
+                "border-left:4px solid #0E639C;")
+        S_TIP = ("background:#E8F4FE; color:#0550AE; padding:10px 14px; "
+                 "border-left:4px solid #0550AE; margin:10px 0; font-size:12px;")
+        S_WARN = ("background:#FFF8E1; color:#7A5A00; padding:10px 14px; "
+                  "border-left:4px solid #E8A317; margin:10px 0; font-size:12px;")
+        S_DANGER = ("background:#FFF0F0; color:#9B1C1C; padding:10px 14px; "
+                    "border-left:4px solid #D1242F; margin:10px 0; font-size:12px;")
+
+        return f"""
+<h1 style="color:#264F78; font-size:24px; margin-bottom:4px;">📖 iDRAC Toolkit 사용법</h1>
+<p style="color:#57606a; margin-top:0; font-size:12px;">v{APP_VERSION} · Dell PowerEdge 서버 관리 도구</p>
+
+<div style="{S_TIP}">
+🚀 <b>3초 요약:</b> IP·계정 입력 → 조회 항목 체크 → [▶ 실행] → 결과 확인 → 필요시 저장
+</div>
+
+<div style="{S_H1}">1. 앱 소개</div>
+<p>Dell PowerEdge 서버의 <b>iDRAC Redfish API</b>를 통해 HW / FW / BIOS 정보를 조회하고,
+로그 추출·펌웨어 업데이트까지 한 화면에서 처리하는 도구입니다.</p>
+<ul>
+  <li><b>HW 정보</b> — 모델, CPU, 메모리, 팬, 스토리지, RAID, 디스크, PSU, NIC</li>
+  <li><b>FW 정보</b> — BIOS, iDRAC, LC, PERC, BOSS, CPLD, PSU, TPM 등</li>
+  <li><b>BIOS 설정</b> — System Profile, Processor, Integrated Devices, Power</li>
+  <li><b>로그 추출</b> — LCLog / SEL 을 엑셀로</li>
+  <li><b>펌웨어 업데이트</b> — 3단계 안전 확인 후 진행</li>
+</ul>
+
+<div style="{S_H1}">2. 기본 사용법</div>
+<div style="{S_H2}">① 접속 정보 입력</div>
+<ul>
+  <li><b>iDRAC IP</b> — 서버 iDRAC 관리 IP</li>
+  <li><b>Username</b> — 기본값 <code>root</code></li>
+  <li><b>Password</b> — [보기] 체크로 확인 가능</li>
+</ul>
+
+<div style="{S_H2}">② 조회 항목 선택</div>
+<ul>
+  <li><b>HW / FW / BIOS</b> — 중복 선택 가능 (예: HW+FW 만)</li>
+  <li><b>모든 항목 표시</b> — BIOS 전체 속성(150~475개) 그룹별 표시</li>
+  <li><b>5g 모드</b> — 운영 핵심 BIOS 15개 항목만 프리셋</li>
+</ul>
+
+<div style="{S_H2}">③ [▶ 실행] 클릭</div>
+<p>백그라운드에서 조회 → 결과창에 컬러 정리되어 표시.
+Service Tag / IP / 옵션 / 조회 시간은 항상 상단에 표시됩니다.</p>
+
+<div style="{S_H1}">3. 🔍 키 필터 사용법</div>
+<p>결과창 위 <b>키 필터</b> 입력칸에 키워드를 넣으면 매칭되는 BIOS 속성 / FW 컴포넌트만 표시됩니다.</p>
+<div style="{S_H2}">규칙</div>
+<ul>
+  <li><b>대소문자 무시</b> — <code>proc</code> = <code>Proc</code> = <code>PROC</code></li>
+  <li><b>부분 일치</b> — <code>Mem</code> → <code>Memory</code>, <code>MemFrequency</code>, <code>MemPatrolScrub</code></li>
+  <li><b>여러 개</b> — 콤마 / 공백으로 구분: <code>Mem, Boot, Pxe</code></li>
+  <li><b>와일드카드 *</b> — <code>Proc*</code> = "Proc로 시작" 만</li>
+</ul>
+<div style="{S_H2}">바로 복사해 쓰는 예시</div>
+<table cellspacing="0" cellpadding="8" style="border-collapse:collapse; width:100%;">
+<tr style="background:#0E639C; color:white;"><th align="left" style="padding:8px 12px;">입력 키워드</th><th align="left" style="padding:8px 12px;">추출 항목</th></tr>
+<tr><td style="padding:6px 12px; font-family:Menlo,monospace;">Mem*, Dimm*, Numa</td><td style="padding:6px 12px;">메모리 관련 모두</td></tr>
+<tr style="background:#F6F8FA;"><td style="padding:6px 12px; font-family:Menlo,monospace;">Proc*, Cpu*, Turbo</td><td style="padding:6px 12px;">CPU/프로세서 관련</td></tr>
+<tr><td style="padding:6px 12px; font-family:Menlo,monospace;">Boot*, Uefi, SecureBoot</td><td style="padding:6px 12px;">부팅 관련</td></tr>
+<tr style="background:#F6F8FA;"><td style="padding:6px 12px; font-family:Menlo,monospace;">Pxe*, Network*, Http*</td><td style="padding:6px 12px;">네트워크/PXE</td></tr>
+<tr><td style="padding:6px 12px; font-family:Menlo,monospace;">Tpm*, Sec*, Aes</td><td style="padding:6px 12px;">보안/TPM</td></tr>
+<tr style="background:#F6F8FA;"><td style="padding:6px 12px; font-family:Menlo,monospace;">Power*, AcPwr*, Energy</td><td style="padding:6px 12px;">전원</td></tr>
+<tr><td style="padding:6px 12px; font-family:Menlo,monospace;">Virt*, Sriov, Iommu</td><td style="padding:6px 12px;">가상화</td></tr>
+<tr style="background:#F6F8FA;"><td style="padding:6px 12px; font-family:Menlo,monospace;">BIOS, iDRAC, PERC, BOSS</td><td style="padding:6px 12px;">특정 펌웨어만</td></tr>
+<tr><td style="padding:6px 12px; font-family:Menlo,monospace;">NIC, Broadcom, Intel</td><td style="padding:6px 12px;">NIC 펌웨어</td></tr>
+<tr style="background:#F6F8FA;"><td style="padding:6px 12px; font-family:Menlo,monospace;">Disk*, Drive</td><td style="padding:6px 12px;">디스크 펌웨어</td></tr>
+</table>
+<div style="{S_TIP}">💡 <b>모든 항목 표시</b> 체크박스를 같이 켜면 검색 범위가 BIOS 전체로 넓어져 필터가 가장 잘 동작합니다.</div>
+
+<div style="{S_H1}">4. 📊 엑셀로 저장</div>
+<p>결과창 위 <b>[📊 엑셀로 저장]</b> 클릭 → 저장 위치 선택 → 완료.</p>
+<ul>
+  <li>시트명: <b>Service Tag 기준</b> (예: <code>ABCD123</code>)</li>
+  <li>HW/FW/BIOS 모두 <b>한 시트에 통합</b> 저장</li>
+  <li>같은 파일을 다시 선택하면 다른 서버 결과가 <b>추가 시트</b> 로 누적</li>
+  <li>디자인 톤은 앱 화면과 동일 (진파랑 헤더 / 네이비 큰섹션 / 연파랑 소섹션)</li>
+</ul>
+
+<div style="{S_H1}">5. 📥 로그 추출 (LCLog / SEL)</div>
+<p><b>[📥 로그 추출]</b> 버튼 → 로그 종류 선택 → 진행률 표시 → 저장 위치 지정.</p>
+<ul>
+  <li><b>LCLog</b> — 펌웨어 업데이트, 설정 변경, 부팅, 에러 이력</li>
+  <li><b>SEL</b> — PSU / FAN / Memory ECC 등 하드웨어 이벤트</li>
+  <li>Severity 별 <b>자동 색상</b> — 🔴 Critical / 🟡 Warning / 🟢 OK</li>
+  <li>진행률 실시간 표시, 취소 가능</li>
+</ul>
+
+<div style="{S_H1}">6. 🔧 펌웨어 업데이트</div>
+<div style="{S_DANGER}">
+⚠️ <b>위험한 작업입니다.</b><br>
+• 잘못된 펌웨어 → 부팅 불가 상태 가능<br>
+• BIOS 업데이트는 자동 재부팅 → 서비스 중단<br>
+• 업데이트 중 <b>전원 절대 금지</b>
+</div>
+<p><b>4단계 안전 프로세스</b>:</p>
+<ol>
+  <li><b>위험 경고 + 3개 체크</b> — 유지보수 시간 / 백업 완료 / Dell 공식 펌웨어 확인</li>
+  <li><b>파일 선택 + 적용 시점</b> — 즉시(Immediate) 또는 다음 재부팅 시(OnReset)</li>
+  <li><b>최종 확인</b> — <code>UPDATE</code> 대문자 타이핑</li>
+  <li><b>진행률 표시</b> — 파일 업로드 → iDRAC 적용 (5초 간격 폴링)</li>
+</ol>
+
+<div style="{S_H1}">7. 지원 모델</div>
+<p>표준 Redfish API 를 쓰는 <b>모든 Dell PowerEdge 모델 자동 감지</b>:</p>
+<table cellspacing="0" cellpadding="8" style="border-collapse:collapse; width:100%;">
+<tr style="background:#264F78; color:white;"><th align="left" style="padding:8px 12px;">세대</th><th align="left" style="padding:8px 12px;">모델 예시</th></tr>
+<tr><td style="padding:6px 12px; background:#D5E5F2; color:#0E639C; font-weight:600;">14G</td><td style="padding:6px 12px;">R640, R740, R740xd, R840, R940</td></tr>
+<tr><td style="padding:6px 12px; background:#D5E5F2; color:#0E639C; font-weight:600;">15G</td><td style="padding:6px 12px;">R650, R750, R6515, R7515, R6525, R7525</td></tr>
+<tr><td style="padding:6px 12px; background:#D5E5F2; color:#0E639C; font-weight:600;">16G</td><td style="padding:6px 12px;">R660, R760, R6615, R7615, R6625, R7625</td></tr>
+<tr><td style="padding:6px 12px; background:#D5E5F2; color:#0E639C; font-weight:600;">블레이드</td><td style="padding:6px 12px;">MX740c, MX750c, MX760c</td></tr>
+</table>
+
+<div style="{S_H1}">8. 문제 해결 (FAQ)</div>
+
+<div style="{S_H2}">Q. 한글 비밀번호로 로그인이 안 돼요</div>
+<p>v3.0.0부터 UTF-8 Basic Auth 로 변경되어 한글/특수문자 비밀번호도 지원합니다.</p>
+
+<div style="{S_H2}">Q. HTTP 503 응답을 받았어요</div>
+<p>iDRAC 이 일시적 응답 불가 상태입니다. iDRAC 부팅 중이거나 펌웨어 업데이트 중일 수 있어요. 1~2분 기다린 후 다시 [실행].</p>
+
+<div style="{S_H2}">Q. 결과창이 비어 있어요</div>
+<p>체크박스 (HW/FW/BIOS) 중 최소 하나는 켜야 합니다.</p>
+
+<div style="{S_H2}">Q. 키 필터를 입력했는데 0개 나와요</div>
+<p>기본 모드에서는 14개 핵심 항목 안에서만 찾아서 매칭이 적습니다. <b>[모든 항목 표시]</b> 를 켜고 다시 시도하세요.</p>
+
+<div style="{S_H2}">Q. macOS "손상됨" 경고가 떠요</div>
+<p>터미널: <code>xattr -cr "/Applications/iDRAC Toolkit.app"</code></p>
+
+<div style="{S_H2}">Q. Windows SmartScreen 경고가 떠요</div>
+<p>"추가 정보" → "실행" 클릭 한 번만 하면 됩니다.</p>
+
+<hr style="border:0; border-top:1px solid #d0d7de; margin:20px 0;">
+<div style="text-align:center; color:#57606a; font-size:12px; padding:12px 0;">
+  📮 버그 리포트 / 기능 제안: 도구바 [❓ 문의] 버튼 → GitHub Issues
+  <br><br>
+  <span style="font-size:10px;">iDRAC Toolkit v{APP_VERSION} · Made by longchiri</span>
+</div>
+"""
+
     # ---------- 설정 저장/복원 ----------
     def _restore_settings(self):
         self.ip_in.setText(self.settings.value("ip", "", str))
@@ -2578,6 +2846,8 @@ class MainWindow(QMainWindow):
         self.key_filter_in.setText(self.settings.value("key_filter", "", str))
         last_xlsx = self.settings.value("last_xlsx", "", str)
         self._last_xlsx = last_xlsx if last_xlsx else ""
+        # 초기 웰컴 화면
+        self._show_welcome()
 
     def closeEvent(self, event):
         self.settings.setValue("ip", self.ip_in.text())
@@ -2754,9 +3024,37 @@ class MainWindow(QMainWindow):
         self.result.append(html_str)
 
     def _clear(self):
-        self.result.clear()
         self.last_payload = {}
+        self._show_welcome()
         self.status.showMessage("결과 지움")
+
+    def _show_welcome(self):
+        """빈 결과창 안내"""
+        self.result.setHtml(f"""
+<div style="text-align:center; padding:60px 20px; color:#57606a;">
+  <div style="font-size:48px; margin-bottom:14px;">🖥️</div>
+  <div style="font-size:18px; color:#1f2328; font-weight:700; margin-bottom:6px;">
+    iDRAC Toolkit v{APP_VERSION}
+  </div>
+  <div style="font-size:12px; margin-bottom:24px;">Dell PowerEdge 서버 관리 도구</div>
+
+  <div style="max-width:520px; margin:0 auto; text-align:left; padding:18px 22px;
+              background:#f6f8fa; border:1px solid #d0d7de; border-radius:8px; font-size:12px;">
+    <div style="color:#0969DA; font-weight:700; margin-bottom:10px;">👉 시작하기</div>
+    <ol style="margin:0; padding-left:20px; line-height:1.9;">
+      <li>위쪽 <b>iDRAC 접속 정보</b> 입력 (IP / Username / Password)</li>
+      <li><b>조회 항목</b> 체크 (HW / FW / BIOS)</li>
+      <li>파란 <b>[▶ 실행]</b> 버튼 클릭</li>
+      <li>결과가 이 화면에 표시됩니다</li>
+    </ol>
+    <div style="margin-top:14px; padding-top:12px; border-top:1px solid #d0d7de; color:#57606a;">
+      💡 실제 서버 없이 미리 보고 싶으면 <b>[샘플 보기]</b> 버튼<br>
+      📖 자세한 설명은 상단 <b>[사용법]</b> 탭
+    </div>
+  </div>
+</div>
+""")
+
 
     def _apply_font_size(self, sz: int):
         f = self.result.font()
@@ -3075,28 +3373,8 @@ class MainWindow(QMainWindow):
     # ❓ 문의
     # ============================================================
     def on_contact(self):
-        box = QMessageBox(self)
-        box.setWindowTitle("문의하기")
-        box.setIcon(QMessageBox.Information)
-        box.setTextFormat(Qt.RichText)
-        box.setText(
-            "<b>📮 문의 / 버그 리포트</b><br><br>"
-            "버그, 개선 요청, 기능 제안은 <b>GitHub Issues</b> 로 남겨주세요.<br>"
-            "브라우저로 GitHub 페이지를 열까요?<br><br>"
-            f"<span style='color:#57606a; font-size:11px;'>이동 URL: <br>{ISSUES_URL}</span>"
-        )
-        open_btn = box.addButton("GitHub 열기", QMessageBox.AcceptRole)
-        copy_btn = box.addButton("URL 복사", QMessageBox.ActionRole)
-        cancel_btn = box.addButton("취소", QMessageBox.RejectRole)
-        box.setDefaultButton(open_btn)
-        box.exec()
-
-        clicked = box.clickedButton()
-        if clicked == open_btn:
-            QDesktopServices.openUrl(QUrl(ISSUES_URL))
-        elif clicked == copy_btn:
-            QApplication.clipboard().setText(ISSUES_URL)
-            self.status.showMessage("GitHub Issues URL 을 클립보드에 복사했습니다", 4000)
+        dlg = ContactDialog(self)
+        dlg.exec()
 
     def _on_fw_fail(self, kind: str, msg: str):
         if hasattr(self, 'fw_progress_dlg'):
