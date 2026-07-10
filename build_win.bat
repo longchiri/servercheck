@@ -59,13 +59,18 @@ if exist iDRAC_Viewer.ico set ADD_DATA_ARG=%ADD_DATA_ARG% --add-data "iDRAC_View
 if exist iDRAC_Viewer.png set ADD_DATA_ARG=%ADD_DATA_ARG% --add-data "iDRAC_Viewer.png;."
 if exist iDRAC_Viewer.icns set ADD_DATA_ARG=%ADD_DATA_ARG% --add-data "iDRAC_Viewer.icns;."
 
+set VERSION_ARG=
+if exist version_info.txt set VERSION_ARG=--version-file version_info.txt
+
 pyinstaller ^
   --windowed ^
   --onefile ^
   --noconfirm ^
   --clean ^
+  --noupx ^
   --name "%APP_NAME%" ^
   %ICON_ARG% ^
+  %VERSION_ARG% ^
   %ADD_DATA_ARG% ^
   "%ENTRY%"
 

@@ -215,8 +215,24 @@ class Inspector:
         import mimetypes
         from requests_toolbelt.multipart.encoder import MultipartEncoder, MultipartEncoderMonitor
 
-        upload_url = self._url("/redfish/v1/UpdateService/MultipartUpload")
+        # ─── 1) UpdateService 에서 실제 업로드 경로 조회 (iDRAC 버전마다 다름) ───
+        multipart_uri = "/redfish/v1/UpdateService/MultipartUpload"  # 기본값
+        try:
+            us = self._get("/redfish/v1/UpdateService")
+            # 표준 필드: MultipartHttpPushUri
+            if us.get("MultipartHttpPushUri"):
+                multipart_uri = us["MultipartHttpPushUri"]
+            # iDRAC 일부 버전에서 Actions 하위 경로 노출
+            elif us.get("Actions", {}).get("Oem", {}).get("#DellUpdateService.Install", {}).get("target"):
+                # Dell OEM Install 대체 경로
+                pass  # multipart 는 표준 경로 유지
+        except Exception:
+            pass  # UpdateService 조회 실패해도 기본 경로로 시도
 
+        upload_url = self._url(multipart_uri) if multipart_uri.startswith("/") \
+                     else multipart_uri
+
+        # ─── 2) UpdateParameters — Redfish 표준 포맷 ───
         params = {
             "Targets": [],
             "@Redfish.OperationApplyTime": apply_time,
@@ -226,36 +242,78 @@ class Inspector:
         filename = os.path.basename(file_path)
         mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
-        encoder = MultipartEncoder(
-            fields={
-                "UpdateParameters": ("params.json", json.dumps(params), "application/json"),
-                "UpdateFile": (filename, open(file_path, "rb"), mime),
-            }
-        )
+        file_handle = open(file_path, "rb")
+        try:
+            encoder = MultipartEncoder(
+                fields={
+                    "UpdateParameters": ("params.json", json.dumps(params), "application/json"),
+                    "UpdateFile": (filename, file_handle, mime),
+                }
+            )
 
-        def cb(monitor):
-            if progress_callback:
-                progress_callback(monitor.bytes_read, monitor.len)
+            def cb(monitor):
+                if progress_callback:
+                    progress_callback(monitor.bytes_read, monitor.len)
 
-        monitor = MultipartEncoderMonitor(encoder, cb)
-        headers = {"Content-Type": monitor.content_type}
-        # session.auth 는 이미 UTF-8 Authorization 헤더로 세팅됨
+            monitor = MultipartEncoderMonitor(encoder, cb)
 
-        r = requests.post(
-            upload_url,
-            data=monitor,
-            headers={**headers, **{"Authorization": self.session.headers["Authorization"]}},
-            verify=False,
-            timeout=1800,  # 30분
-        )
+            r = requests.post(
+                upload_url,
+                data=monitor,
+                headers={
+                    "Content-Type": monitor.content_type,
+                    "Authorization": self.session.headers["Authorization"],
+                    "Accept": "application/json",
+                },
+                verify=False,
+                timeout=1800,  # 30분
+            )
+        finally:
+            try:
+                file_handle.close()
+            except Exception:
+                pass
+
+        # ─── 3) 응답 처리 (에러 시 상세 사유 노출) ───
         if r.status_code not in (200, 201, 202):
-            raise InspectorError(f"업로드 실패: HTTP {r.status_code}: {r.text[:200]}")
+            # iDRAC 이 준 상세 사유 파싱
+            detail = ""
+            try:
+                body = r.json()
+                # Redfish 표준 에러 포맷: error.@Message.ExtendedInfo[]
+                err = body.get("error", body)
+                if isinstance(err, dict):
+                    ext = err.get("@Message.ExtendedInfo", [])
+                    if isinstance(ext, list) and ext:
+                        msgs = []
+                        for m in ext[:3]:  # 최대 3개
+                            mid = m.get("MessageId", "")
+                            msg = m.get("Message", "")
+                            reso = m.get("Resolution", "")
+                            line = f"  · [{mid}] {msg}"
+                            if reso and reso != "No response action is required.":
+                                line += f"\n    → {reso}"
+                            msgs.append(line)
+                        detail = "\n" + "\n".join(msgs)
+                    elif err.get("message"):
+                        detail = f"\n  · {err.get('message')}"
+            except Exception:
+                detail = f"\n  응답: {r.text[:300]}"
 
-        # Job/Task 위치는 Location 헤더 또는 응답 본문에서
+            raise InspectorError(
+                f"업로드 실패 (HTTP {r.status_code})\n"
+                f"URL: {upload_url}\n"
+                f"iDRAC 응답:{detail}"
+            )
+
+        # ─── 4) Job/Task URI 추출 ───
         task_uri = r.headers.get("Location", "")
         if not task_uri:
             try:
-                task_uri = r.json().get("@odata.id", "")
+                body = r.json()
+                task_uri = (body.get("@odata.id")
+                            or body.get("TaskMonitor")
+                            or body.get("Id", ""))
             except Exception:
                 pass
         if not task_uri:
@@ -3030,7 +3088,13 @@ class MainWindow(QMainWindow):
              f"터미널: {code('xattr -cr &quot;/Applications/iDRAC Toolkit.app&quot;')}<br>"
              f"또는 앱과 함께 배포된 <b>install_mac.command</b> 스크립트를 더블클릭"),
             ("Windows SmartScreen 경고가 떠요",
-             "\"추가 정보\" → \"실행\" 클릭 한 번만 하면 됩니다."),
+             "\"추가 정보\" → \"실행\" 클릭 한 번만 하면 됩니다. "
+             "zip 안의 <b>install_win.bat</b> 을 더블클릭하면 자동으로 Program Files 이동 + "
+             "바탕화면 바로가기 생성까지 됩니다."),
+            ("Windows Defender 가 .exe 를 삭제/격리했어요",
+             "PyInstaller 앱은 종종 오탐지됩니다. Windows 보안 → 바이러스 및 위협 방지 → "
+             "보호 기록 에서 항목 <b>[복원]</b> 클릭. "
+             "또는 install_win.bat 스크립트 안에 자세한 예외 등록 방법이 표시됩니다."),
         ]
         faq_cards = ""
         for q, a in faqs:

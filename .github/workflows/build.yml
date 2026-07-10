@@ -91,25 +91,33 @@ jobs:
           python -m pip install --upgrade pip
           pip install PySide6 requests requests-toolbelt openpyxl pyinstaller
 
-      - name: PyInstaller 로 .exe 빌드
+      - name: PyInstaller 로 .exe 빌드 (오탐 방지 옵션)
         run: |
           pyinstaller `
             --windowed `
             --onefile `
             --noconfirm `
             --clean `
+            --noupx `
             --name "iDRAC_Toolkit" `
             --icon iDRAC_Viewer.ico `
+            --version-file version_info.txt `
             --add-data "iDRAC_Viewer.ico;." `
             --add-data "iDRAC_Viewer.png;." `
             --add-data "iDRAC_Viewer.icns;." `
             dell_viewer.py
 
+      - name: install_win.bat 스크립트 포함 + zip
+        run: |
+          Copy-Item install_win.bat dist/install_win.bat
+          Compress-Archive -Path dist/iDRAC_Toolkit.exe,dist/install_win.bat -DestinationPath dist/iDRAC_Toolkit_Windows.zip -Force
+          Get-ChildItem dist
+
       - name: Windows artifact 업로드
         uses: actions/upload-artifact@v4
         with:
           name: iDRAC_Toolkit_Windows
-          path: dist/iDRAC_Toolkit.exe
+          path: dist/iDRAC_Toolkit_Windows.zip
           retention-days: 30
 
   # ============================================================
@@ -130,6 +138,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            Server_Check_macOS/Server_Check_macOS.zip
-            Server_Check_Windows/Server_Check.exe
+            iDRAC_Toolkit_macOS/iDRAC_Toolkit_macOS.zip
+            iDRAC_Toolkit_Windows/iDRAC_Toolkit_Windows.zip
           generate_release_notes: true
