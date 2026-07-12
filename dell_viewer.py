@@ -205,49 +205,77 @@ class Inspector:
         except InspectorError as e:
             return True, f"(상태 확인 실패, 계속 진행 가능: {e})"
 
+    def _extract_error_detail(self, r) -> str:
+        """iDRAC Redfish 에러 응답에서 상세 사유 추출"""
+        try:
+            body = r.json()
+            err = body.get("error", body)
+            if isinstance(err, dict):
+                ext = err.get("@Message.ExtendedInfo", [])
+                if isinstance(ext, list) and ext:
+                    msgs = []
+                    for m in ext[:3]:
+                        mid = m.get("MessageId", "")
+                        msg = m.get("Message", "")
+                        reso = m.get("Resolution", "")
+                        line = f"  · [{mid}] {msg}"
+                        if reso and reso != "No response action is required.":
+                            line += f"\n    → {reso}"
+                        msgs.append(line)
+                    return "\n" + "\n".join(msgs)
+                elif err.get("message"):
+                    return f"\n  · {err.get('message')}"
+        except Exception:
+            pass
+        return f"\n  응답: {r.text[:400]}"
+
     def upload_firmware_multipart(self, file_path: str, apply_time: str = "Immediate",
                                    progress_callback=None) -> str:
         """Multipart HTTP Push 로 펌웨어 파일 업로드.
-           apply_time: 'Immediate' 또는 'OnReset'
-           progress_callback(bytes_sent, total_bytes) 있으면 업로드 진행률 콜백
-           반환: Job/Task URI (예: /redfish/v1/TaskService/Tasks/JID_xxxx)
+           - 우선 Dell 공식 예제 스타일의 MultipartUpload 시도
+           - 실패 시 HttpPushUri 방식 폴백
+           반환: Job/Task URI
         """
         import mimetypes
         from requests_toolbelt.multipart.encoder import MultipartEncoder, MultipartEncoderMonitor
 
-        # ─── 1) UpdateService 에서 실제 업로드 경로 조회 (iDRAC 버전마다 다름) ───
-        multipart_uri = "/redfish/v1/UpdateService/MultipartUpload"  # 기본값
+        # UpdateService 에서 정확한 URI 조회
+        multipart_uri = None
+        http_push_uri = None
         try:
             us = self._get("/redfish/v1/UpdateService")
-            # 표준 필드: MultipartHttpPushUri
-            if us.get("MultipartHttpPushUri"):
-                multipart_uri = us["MultipartHttpPushUri"]
-            # iDRAC 일부 버전에서 Actions 하위 경로 노출
-            elif us.get("Actions", {}).get("Oem", {}).get("#DellUpdateService.Install", {}).get("target"):
-                # Dell OEM Install 대체 경로
-                pass  # multipart 는 표준 경로 유지
+            multipart_uri = us.get("MultipartHttpPushUri")
+            http_push_uri = us.get("HttpPushUri")
         except Exception:
-            pass  # UpdateService 조회 실패해도 기본 경로로 시도
+            pass
+        # 기본값 (표준 Redfish 경로)
+        if not multipart_uri:
+            multipart_uri = "/redfish/v1/UpdateService/MultipartUpload"
 
-        upload_url = self._url(multipart_uri) if multipart_uri.startswith("/") \
-                     else multipart_uri
+        filename = os.path.basename(file_path)
 
-        # ─── 2) UpdateParameters — Redfish 표준 포맷 ───
+        # ============================================================
+        # 방식 1: MultipartHttpPushUri (Redfish 표준, 권장)
+        # ============================================================
+        upload_url = self._url(multipart_uri) if multipart_uri.startswith("/") else multipart_uri
+
+        # ⚠️ Dell 공식 예제와 정확히 일치하도록:
+        # - UpdateParameters 파트의 파일명 = None (Dell iDRAC 이 파일명 있으면 거부)
+        # - UpdateFile 파트의 Content-Type = "multipart/form-data" (Dell 명세)
         params = {
             "Targets": [],
             "@Redfish.OperationApplyTime": apply_time,
-            "Oem": {}
+            "Oem": {},
         }
 
-        filename = os.path.basename(file_path)
-        mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-
         file_handle = open(file_path, "rb")
+        multipart_error = None
+        r = None
         try:
             encoder = MultipartEncoder(
                 fields={
-                    "UpdateParameters": ("params.json", json.dumps(params), "application/json"),
-                    "UpdateFile": (filename, file_handle, mime),
+                    "UpdateParameters": (None, json.dumps(params), "application/json"),
+                    "UpdateFile": (filename, file_handle, "multipart/form-data"),
                 }
             )
 
@@ -266,59 +294,114 @@ class Inspector:
                     "Accept": "application/json",
                 },
                 verify=False,
-                timeout=1800,  # 30분
+                timeout=1800,
             )
+
+            if r.status_code in (200, 201, 202):
+                # 성공 — Job URI 추출
+                task_uri = r.headers.get("Location", "")
+                if not task_uri:
+                    try:
+                        body = r.json()
+                        task_uri = (body.get("@odata.id")
+                                    or body.get("TaskMonitor")
+                                    or body.get("Id", ""))
+                    except Exception:
+                        pass
+                if not task_uri:
+                    raise InspectorError("업로드 성공했지만 Job/Task URI를 못 찾음")
+                return task_uri
+            else:
+                multipart_error = (
+                    f"HTTP {r.status_code}\n"
+                    f"URL: {upload_url}\n"
+                    f"응답:{self._extract_error_detail(r)}"
+                )
+        except InspectorError:
+            raise
+        except Exception as e:
+            multipart_error = f"예외: {e}"
         finally:
             try:
                 file_handle.close()
             except Exception:
                 pass
 
-        # ─── 3) 응답 처리 (에러 시 상세 사유 노출) ───
-        if r.status_code not in (200, 201, 202):
-            # iDRAC 이 준 상세 사유 파싱
-            detail = ""
+        # ============================================================
+        # 방식 2: HttpPushUri 폴백 (iDRAC 8 또는 구형 iDRAC 9)
+        # ============================================================
+        if http_push_uri:
             try:
-                body = r.json()
-                # Redfish 표준 에러 포맷: error.@Message.ExtendedInfo[]
-                err = body.get("error", body)
-                if isinstance(err, dict):
-                    ext = err.get("@Message.ExtendedInfo", [])
-                    if isinstance(ext, list) and ext:
-                        msgs = []
-                        for m in ext[:3]:  # 최대 3개
-                            mid = m.get("MessageId", "")
-                            msg = m.get("Message", "")
-                            reso = m.get("Resolution", "")
-                            line = f"  · [{mid}] {msg}"
-                            if reso and reso != "No response action is required.":
-                                line += f"\n    → {reso}"
-                            msgs.append(line)
-                        detail = "\n" + "\n".join(msgs)
-                    elif err.get("message"):
-                        detail = f"\n  · {err.get('message')}"
-            except Exception:
-                detail = f"\n  응답: {r.text[:300]}"
+                push_url = self._url(http_push_uri) if http_push_uri.startswith("/") else http_push_uri
+                # ETag 획득 (필수)
+                etag = ""
+                try:
+                    head = requests.get(push_url, headers={
+                        "Authorization": self.session.headers["Authorization"]
+                    }, verify=False, timeout=30)
+                    etag = head.headers.get("ETag", "")
+                except Exception:
+                    pass
 
-            raise InspectorError(
-                f"업로드 실패 (HTTP {r.status_code})\n"
-                f"URL: {upload_url}\n"
-                f"iDRAC 응답:{detail}"
-            )
+                # 파일 전체 로드 (스트리밍보다 안전)
+                with open(file_path, "rb") as f:
+                    file_bytes = f.read()
 
-        # ─── 4) Job/Task URI 추출 ───
-        task_uri = r.headers.get("Location", "")
-        if not task_uri:
-            try:
-                body = r.json()
-                task_uri = (body.get("@odata.id")
-                            or body.get("TaskMonitor")
-                            or body.get("Id", ""))
-            except Exception:
-                pass
-        if not task_uri:
-            raise InspectorError("업로드는 성공했지만 Job/Task URI를 못 찾음")
-        return task_uri
+                headers = {
+                    "Content-Type": "multipart/form-data",
+                    "Authorization": self.session.headers["Authorization"],
+                    "Accept": "application/json",
+                }
+                if etag:
+                    headers["If-Match"] = etag
+
+                # 진행률은 파일 로드 완료로 처리 (스트리밍 폴백)
+                if progress_callback:
+                    progress_callback(len(file_bytes), len(file_bytes))
+
+                r2 = requests.post(
+                    push_url,
+                    data=file_bytes,
+                    headers=headers,
+                    verify=False,
+                    timeout=1800,
+                )
+                if r2.status_code in (200, 201, 202):
+                    task_uri = r2.headers.get("Location", "")
+                    if not task_uri:
+                        try:
+                            body = r2.json()
+                            task_uri = (body.get("@odata.id")
+                                        or body.get("TaskMonitor")
+                                        or body.get("Id", ""))
+                        except Exception:
+                            pass
+                    if task_uri:
+                        return task_uri
+                    else:
+                        raise InspectorError("HttpPush 성공했지만 Job URI를 못 찾음")
+                # 폴백도 실패
+                fallback_error = (
+                    f"[HttpPushUri 폴백도 실패]\n"
+                    f"HTTP {r2.status_code}\n"
+                    f"응답:{self._extract_error_detail(r2)}"
+                )
+                raise InspectorError(
+                    f"펌웨어 업로드 실패\n\n"
+                    f"[방식 1 MultipartUpload]\n{multipart_error}\n\n"
+                    f"{fallback_error}"
+                )
+            except InspectorError:
+                raise
+            except Exception as e:
+                raise InspectorError(
+                    f"펌웨어 업로드 실패\n\n"
+                    f"[방식 1 MultipartUpload]\n{multipart_error}\n\n"
+                    f"[방식 2 HttpPushUri 예외]\n{e}"
+                )
+
+        # 방식 2 자체가 없음 → 방식 1 에러 그대로
+        raise InspectorError(f"펌웨어 업로드 실패\n{multipart_error}")
 
     def poll_job(self, job_uri: str) -> dict:
         """Job/Task 상태 조회. 반환: {percent, state, messages}"""
