@@ -109,7 +109,7 @@ except Exception:
 
 
 APP_NAME = "iDRAC Toolkit"
-APP_VERSION = "3.0.0"
+APP_VERSION = "3.1.0"
 ISSUES_URL = "https://github.com/longchiri/servercheck/issues/new"
 
 # =========================================================
