@@ -3942,13 +3942,13 @@ class MainWindow(QMainWindow):
         self.log_worker.failed.connect(self._on_log_fail)
         self.log_progress_dlg.cancelled.connect(self.log_worker.cancel)
 
-        self.log_btn.setEnabled(False)
+        # (setEnabled(False) 제거 - 모달 다이얼로그로 중복 실행 방지됨)
         self.log_worker.start()
         self.log_progress_dlg.exec()  # 모달 표시
 
     def _on_log_done(self, payload: dict):
         self.log_progress_dlg.close()
-        self.log_btn.setEnabled(True)
+        # (setEnabled 관리 제거)
 
         # 결과 요약
         counts = {k: len(v) for k, v in payload.items()}
@@ -4000,7 +4000,7 @@ class MainWindow(QMainWindow):
     def _on_log_fail(self, kind: str, msg: str):
         if hasattr(self, 'log_progress_dlg'):
             self.log_progress_dlg.close()
-        self.log_btn.setEnabled(True)
+        # (setEnabled 관리 제거)
         title = {"AUTH": "인증 실패", "TIMEOUT": "연결 시간 초과",
                  "NETWORK": "네트워크 오류", "HTTP": "서버 응답 오류"}.get(kind, "오류")
         QMessageBox.critical(self, title, msg)
@@ -4120,13 +4120,13 @@ class MainWindow(QMainWindow):
         self.fw_worker.failed.connect(self._on_fw_fail)
         self.fw_progress_dlg.cancelled.connect(self.fw_worker.cancel)
 
-        self.fw_btn.setEnabled(False)
+        # (setEnabled(False) 제거 - 모달 다이얼로그로 이미 중복 실행 방지됨)
         self.fw_worker.start()
         self.fw_progress_dlg.exec()
 
     def _on_fw_done(self, payload: dict):
         self.fw_progress_dlg.close()
-        self.fw_btn.setEnabled(True)
+        # (setEnabled 관리 제거 - 항상 활성화 유지)
 
         total = payload.get("total", 1)
         success = payload.get("success_count", 0)
@@ -4183,7 +4183,7 @@ class MainWindow(QMainWindow):
     def _on_fw_fail(self, kind: str, msg: str):
         if hasattr(self, 'fw_progress_dlg'):
             self.fw_progress_dlg.close()
-        self.fw_btn.setEnabled(True)
+        # (setEnabled 관리 제거 - 항상 활성화 유지)
         title = {
             "AUTH": "인증 실패", "TIMEOUT": "시간 초과",
             "NETWORK": "네트워크 오류", "UPLOAD": "업로드 실패",
