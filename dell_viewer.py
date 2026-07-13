@@ -86,47 +86,12 @@ QPushButton {
 QPushButton:hover { background: #f3f4f6; border-color: #afb8c1; }
 QPushButton:pressed { background: #ebecef; }
 QPushButton:disabled { background: #f6f8fa; color: #8c959f; border-color: #e1e4e8; }
+/* 체크박스 / 라디오 - OS native 스타일 사용 (Qt 가 각 플랫폼에서 자동 렌더링)
+   → macOS: 시스템 파란 체크 자동
+   → Windows: 시스템 파란 체크 자동
+   QSS 로 indicator 를 커스터마이징하면 SVG data URL 문제 등으로 안 보이는 문제 발생함 */
 QCheckBox { color: #1f2328; font-size: 13px; spacing: 8px; padding: 3px 0; }
-QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
-    border: 1.5px solid #8C959F;
-    border-radius: 3px;
-    background: #FFFFFF;
-}
-QCheckBox::indicator:hover {
-    border: 1.5px solid #0969DA;
-}
-QCheckBox::indicator:checked {
-    background: #0969DA;
-    border: 1.5px solid #0969DA;
-    image: url(data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16"><polyline points="3,8.5 6.5,12 13,4" stroke="white" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>);
-}
-QCheckBox::indicator:checked:hover {
-    background: #0860C9;
-    border: 1.5px solid #0860C9;
-}
-QCheckBox::indicator:disabled {
-    background: #F6F8FA;
-    border: 1.5px solid #D0D7DE;
-}
 QRadioButton { color: #1f2328; font-size: 13px; spacing: 8px; padding: 3px 0; }
-QRadioButton::indicator {
-    width: 16px;
-    height: 16px;
-    border: 1.5px solid #8C959F;
-    border-radius: 8px;
-    background: #FFFFFF;
-}
-QRadioButton::indicator:hover {
-    border: 1.5px solid #0969DA;
-}
-QRadioButton::indicator:checked {
-    background: qradialgradient(cx:0.5, cy:0.5, radius:0.5,
-                                stop:0 #FFFFFF, stop:0.35 #FFFFFF,
-                                stop:0.4 #0969DA, stop:1 #0969DA);
-    border: 1.5px solid #0969DA;
-}
 QStatusBar { background: #ffffff; border-top: 1px solid #d0d7de; color: #57606a; }
 QTextBrowser {
     background: #ffffff;
