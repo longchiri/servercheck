@@ -86,8 +86,47 @@ QPushButton {
 QPushButton:hover { background: #f3f4f6; border-color: #afb8c1; }
 QPushButton:pressed { background: #ebecef; }
 QPushButton:disabled { background: #f6f8fa; color: #8c959f; border-color: #e1e4e8; }
-QCheckBox { color: #1f2328; font-size: 13px; spacing: 6px; }
-QCheckBox::indicator { width: 16px; height: 16px; }
+QCheckBox { color: #1f2328; font-size: 13px; spacing: 8px; padding: 3px 0; }
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid #8C959F;
+    border-radius: 3px;
+    background: #FFFFFF;
+}
+QCheckBox::indicator:hover {
+    border: 1.5px solid #0969DA;
+}
+QCheckBox::indicator:checked {
+    background: #0969DA;
+    border: 1.5px solid #0969DA;
+    image: url(data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16"><polyline points="3,8.5 6.5,12 13,4" stroke="white" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>);
+}
+QCheckBox::indicator:checked:hover {
+    background: #0860C9;
+    border: 1.5px solid #0860C9;
+}
+QCheckBox::indicator:disabled {
+    background: #F6F8FA;
+    border: 1.5px solid #D0D7DE;
+}
+QRadioButton { color: #1f2328; font-size: 13px; spacing: 8px; padding: 3px 0; }
+QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid #8C959F;
+    border-radius: 8px;
+    background: #FFFFFF;
+}
+QRadioButton::indicator:hover {
+    border: 1.5px solid #0969DA;
+}
+QRadioButton::indicator:checked {
+    background: qradialgradient(cx:0.5, cy:0.5, radius:0.5,
+                                stop:0 #FFFFFF, stop:0.35 #FFFFFF,
+                                stop:0.4 #0969DA, stop:1 #0969DA);
+    border: 1.5px solid #0969DA;
+}
 QStatusBar { background: #ffffff; border-top: 1px solid #d0d7de; color: #57606a; }
 QTextBrowser {
     background: #ffffff;
@@ -109,7 +148,7 @@ except Exception:
 
 
 APP_NAME = "iDRAC Toolkit"
-APP_VERSION = "3.1.0"
+APP_VERSION = "3.2.0"
 ISSUES_URL = "https://github.com/longchiri/servercheck/issues/new"
 
 # =========================================================
@@ -2041,106 +2080,143 @@ class LogExtractDialog(QDialog):
 #  Firmware Update Worker + Dialogs
 # =========================================================
 class FirmwareUpdateWorker(QThread):
-    """3단계 진행: 1) 파일 업로드  2) iDRAC 검증  3) Job 진행"""
-    stage = Signal(str, str)             # stage_key ('upload'|'verify'|'install'), stage_name
-    upload_progress = Signal(int, int)   # bytes_sent, total_bytes
-    install_progress = Signal(int, str)  # percent, state_message
-    finished_ok = Signal(dict)           # {'job_uri': ..., 'apply_time': ..., 'final_state': ...}
+    """다중 파일 순차 업로드 + Job 폴링"""
+    stage = Signal(str, str)               # stage_key, stage_name
+    file_progress = Signal(int, int, str)  # current_file_idx (1-based), total_files, filename
+    upload_progress = Signal(int, int)     # bytes_sent, total_bytes (현재 파일)
+    install_progress = Signal(int, str)    # percent, state_message
+    finished_ok = Signal(dict)             # {results: [...], ...}
     failed = Signal(str, str)
     cancel_requested = False
 
-    def __init__(self, ip, user, pw, file_path, apply_time, parent=None):
+    def __init__(self, ip, user, pw, file_paths, apply_time, parent=None):
         super().__init__(parent)
         self.ip, self.user, self.pw = ip, user, pw
-        self.file_path = file_path
-        self.apply_time = apply_time   # 'Immediate' or 'OnReset'
+        # file_paths: 문자열 또는 리스트 지원 (하위 호환)
+        if isinstance(file_paths, str):
+            self.file_paths = [file_paths]
+        else:
+            self.file_paths = list(file_paths)
+        self.apply_time = apply_time
         self.cancel_requested = False
 
     def cancel(self):
         self.cancel_requested = True
 
+    def _process_single_file(self, insp, file_path):
+        """단일 파일 업로드 + Job 완료 대기. 반환: (성공여부, 결과dict 또는 에러메시지)"""
+        # 업로드
+        self.stage.emit("upload", f"파일 업로드 중...")
+
+        def upload_cb(sent, total):
+            if not self.cancel_requested:
+                self.upload_progress.emit(sent, total)
+
+        try:
+            job_uri = insp.upload_firmware_multipart(
+                file_path, self.apply_time, progress_callback=upload_cb
+            )
+        except Exception as e:
+            return False, f"업로드 실패:\n{e}"
+
+        # Job 폴링
+        self.stage.emit("install", "iDRAC 이 펌웨어 적용 중...")
+
+        import time
+        last_state = ""
+        stuck_count = 0
+        timeout_sec = 3600
+        start_ts = time.time()
+
+        while not self.cancel_requested:
+            if time.time() - start_ts > timeout_sec:
+                return False, "1시간이 지나도 Job 이 끝나지 않아 대기 중단."
+
+            info = insp.poll_job(job_uri)
+            state = info["state"]
+            pct = info["percent"]
+            msg = info["message"] or f"상태: {state}"
+
+            self.install_progress.emit(pct, msg)
+
+            if state in ("Completed", "RebootCompleted"):
+                return True, {
+                    "file": file_path,
+                    "job_uri": job_uri,
+                    "final_state": state,
+                    "message": msg,
+                    "reboot_pending": self.apply_time == "OnReset",
+                }
+            if state in ("Failed", "Exception", "CompletedWithErrors"):
+                return False, f"Job 실패: {state}\n{msg}"
+
+            if self.apply_time == "OnReset" and state in ("Scheduled", "New", "Ready"):
+                if last_state == state:
+                    stuck_count += 1
+                else:
+                    stuck_count = 0
+                if stuck_count > 5:
+                    return True, {
+                        "file": file_path,
+                        "job_uri": job_uri,
+                        "final_state": state,
+                        "message": "다음 재부팅 시 자동 적용됩니다.",
+                        "reboot_pending": True,
+                    }
+
+            last_state = state
+            time.sleep(5)
+
+        return False, "사용자가 취소함"
+
     def run(self):
         try:
             insp = Inspector(self.ip, self.user, self.pw, timeout=60)
 
-            # STAGE 1: 서버 상태 확인
+            # 서버 상태 확인 (최초 1회)
             self.stage.emit("verify", "iDRAC 상태 확인 중...")
             ready, reason = insp.check_update_ready()
             if not ready:
                 self.failed.emit("BUSY", reason)
                 return
 
-            # STAGE 2: 파일 업로드
-            self.stage.emit("upload", "펌웨어 파일 업로드 중...")
+            # 여러 파일 순차 처리
+            results = []
+            errors = []
+            total = len(self.file_paths)
 
-            def upload_cb(sent, total):
-                if not self.cancel_requested:
-                    self.upload_progress.emit(sent, total)
-
-            try:
-                job_uri = insp.upload_firmware_multipart(
-                    self.file_path, self.apply_time, progress_callback=upload_cb
-                )
-            except Exception as e:
-                self.failed.emit("UPLOAD", f"업로드 실패:\n{e}")
-                return
-
-            # STAGE 3: Job 진행률 폴링
-            self.stage.emit("install", "iDRAC 이 펌웨어 적용 중...")
-
-            import time
-            last_state = ""
-            stuck_count = 0
-            timeout_sec = 3600  # 1시간
-            start_ts = time.time()
-
-            while not self.cancel_requested:
-                if time.time() - start_ts > timeout_sec:
-                    self.failed.emit("TIMEOUT", "1시간이 지나도 Job 이 끝나지 않아 대기 중단.")
+            for idx, file_path in enumerate(self.file_paths, 1):
+                if self.cancel_requested:
+                    self.failed.emit("CANCEL",
+                        f"사용자가 취소했습니다.\n완료된 파일: {len(results)}/{total}")
                     return
 
-                info = insp.poll_job(job_uri)
-                state = info["state"]
-                pct = info["percent"]
-                msg = info["message"] or f"상태: {state}"
+                filename = os.path.basename(file_path)
+                self.file_progress.emit(idx, total, filename)
 
-                self.install_progress.emit(pct, msg)
+                ok, result = self._process_single_file(insp, file_path)
+                if ok:
+                    results.append(result)
+                else:
+                    errors.append(f"[{filename}] {result}")
+                    # 여러 파일 처리 중 하나 실패 → 계속 진행 (부분 성공 케이스)
 
-                # 완료 조건
-                if state in ("Completed", "RebootCompleted"):
-                    self.finished_ok.emit({
-                        "job_uri": job_uri,
-                        "apply_time": self.apply_time,
-                        "final_state": state,
-                        "message": msg,
-                        "reboot_pending": self.apply_time == "OnReset",
-                    })
-                    return
-                if state in ("Failed", "Exception", "CompletedWithErrors"):
-                    self.failed.emit("JOB", f"Job 실패: {state}\n{msg}")
-                    return
-                # OnReset 모드에서 "Scheduled" 상태면 완료로 간주 (재부팅 대기)
-                if self.apply_time == "OnReset" and state in ("Scheduled", "New", "Ready"):
-                    if last_state == state:
-                        stuck_count += 1
-                    else:
-                        stuck_count = 0
-                    if stuck_count > 5:
-                        # 5회 이상 같은 상태면 예약 완료로 간주
-                        self.finished_ok.emit({
-                            "job_uri": job_uri,
-                            "apply_time": self.apply_time,
-                            "final_state": state,
-                            "message": "다음 재부팅 시 자동 적용됩니다.",
-                            "reboot_pending": True,
-                        })
-                        return
-
-                last_state = state
-                time.sleep(5)  # 5초 간격 폴링
-
-            # 취소됨
-            self.failed.emit("CANCEL", "사용자가 취소했습니다. iDRAC 쪽 Job 은 여전히 진행 중일 수 있으니 나중에 iDRAC 웹 UI 로 확인해 주세요.")
+            # 결과 종합
+            if errors and not results:
+                # 전부 실패
+                self.failed.emit("ALL_FAIL",
+                    "모든 파일 업데이트 실패:\n\n" + "\n\n".join(errors))
+            else:
+                # 전체 성공 또는 부분 성공
+                self.finished_ok.emit({
+                    "results": results,
+                    "errors": errors,
+                    "total": total,
+                    "success_count": len(results),
+                    "fail_count": len(errors),
+                    "apply_time": self.apply_time,
+                    "reboot_pending": self.apply_time == "OnReset" and results,
+                })
 
         except Exception as e:
             self.failed.emit("UNK", f"예상치 못한 오류:\n{traceback.format_exc()}")
@@ -2203,12 +2279,13 @@ class FirmwareSafetyDialog(QDialog):
 
 
 class FirmwareSelectDialog(QDialog):
-    """2단계 — 파일 선택 + 적용 시점 선택 + 대상 정보"""
+    """2단계 — 다중 파일 선택 + 적용 시점"""
     def __init__(self, parent=None, target_info: dict = None):
         super().__init__(parent)
         self.setWindowTitle("펌웨어 파일 선택 및 옵션")
-        self.setMinimumWidth(600)
-        self.selected_file = None
+        self.setMinimumWidth(700)
+        self.setMinimumHeight(500)
+        self.selected_files: List[str] = []
         self.selected_apply = "Immediate"
 
         layout = QVBoxLayout(self)
@@ -2219,39 +2296,64 @@ class FirmwareSelectDialog(QDialog):
         info_html = (
             f"<div style='background:#F6F8FA; border:1px solid #D0D7DE; "
             f"padding:10px 14px; border-radius:6px; font-size:11px;'>"
-            f"<b>대상 서버</b><br>"
-            f"iDRAC IP: <b>{html.escape(target_info.get('ip', '-'))}</b><br>"
-            f"Service Tag: <b>{html.escape(target_info.get('service_tag', '(조회 안 됨)'))}</b>"
+            f"<b>대상 서버</b> &nbsp; iDRAC IP: <b>{html.escape(target_info.get('ip', '-'))}</b>"
+            f" &nbsp;/&nbsp; Service Tag: <b>{html.escape(target_info.get('service_tag', '(조회 안 됨)'))}</b>"
             f"</div>"
         )
         lbl_info = QLabel(info_html)
         lbl_info.setTextFormat(Qt.RichText)
         layout.addWidget(lbl_info)
 
-        # 파일 선택
-        file_row = QHBoxLayout()
-        file_row.addWidget(QLabel("펌웨어 파일:"))
-        self.file_input = QLineEdit()
-        self.file_input.setReadOnly(True)
-        self.file_input.setPlaceholderText("Dell 공식 .exe / .d7 파일 선택...")
-        file_row.addWidget(self.file_input, 1)
-        self.browse_btn = QPushButton("찾아보기...")
-        self.browse_btn.clicked.connect(self._browse_file)
-        file_row.addWidget(self.browse_btn)
-        layout.addLayout(file_row)
+        # 파일 선택 도구 바
+        file_bar = QHBoxLayout()
+        title_lbl = QLabel("<b>펌웨어 파일</b> <span style='color:#8C959F; font-size:11px;'>(여러 개 선택 가능)</span>")
+        title_lbl.setTextFormat(Qt.RichText)
+        file_bar.addWidget(title_lbl)
+        file_bar.addStretch()
 
-        self.file_info_lbl = QLabel("")
-        self.file_info_lbl.setStyleSheet("color:#57606a; font-size:11px; padding-left:4px;")
-        layout.addWidget(self.file_info_lbl)
+        self.add_btn = QPushButton("➕  파일 추가")
+        self.add_btn.setStyleSheet(
+            "QPushButton { background:#0969DA; color:white; border:0; "
+            "border-radius:6px; padding:6px 14px; font-weight:600; }"
+            "QPushButton:hover { background:#0860C9; }"
+        )
+        self.add_btn.clicked.connect(self._browse_files)
+        file_bar.addWidget(self.add_btn)
 
-        layout.addSpacing(6)
+        self.remove_btn = QPushButton("선택 삭제")
+        self.remove_btn.clicked.connect(self._remove_selected)
+        file_bar.addWidget(self.remove_btn)
+
+        self.clear_btn = QPushButton("모두 삭제")
+        self.clear_btn.clicked.connect(self._clear_all)
+        file_bar.addWidget(self.clear_btn)
+
+        layout.addLayout(file_bar)
+
+        # 파일 리스트 (QListWidget)
+        from PySide6.QtWidgets import QListWidget
+        self.file_list = QListWidget()
+        self.file_list.setStyleSheet(
+            "QListWidget { background:white; border:1px solid #D0D7DE; "
+            "border-radius:6px; padding:6px; font-size:12px; }"
+            "QListWidget::item { padding:6px 8px; border-bottom:1px solid #EAEDF0; }"
+            "QListWidget::item:selected { background:#DDF4FF; color:#1F2328; }"
+        )
+        layout.addWidget(self.file_list, 1)
+
+        # 요약 라벨
+        self.summary_lbl = QLabel("파일이 선택되지 않음")
+        self.summary_lbl.setStyleSheet("color:#57606a; font-size:11px; padding:4px;")
+        layout.addWidget(self.summary_lbl)
+
+        layout.addSpacing(4)
 
         # 적용 시점
         apply_group = QLabel("<b>적용 시점</b>")
         apply_group.setStyleSheet("font-size:12px; color:#1f2328;")
         layout.addWidget(apply_group)
 
-        from PySide6.QtWidgets import QRadioButton, QButtonGroup
+        from PySide6.QtWidgets import QRadioButton
         self.rb_now = QRadioButton("즉시 적용 (Immediate) — 자동 재부팅 발생, 서비스 중단됨")
         self.rb_now.setStyleSheet("font-size:12px; padding:3px 0;")
         self.rb_now.setChecked(True)
@@ -2277,19 +2379,54 @@ class FirmwareSelectDialog(QDialog):
         btns.addWidget(self.next_btn)
         layout.addLayout(btns)
 
-    def _browse_file(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "펌웨어 파일 선택",
+    def _browse_files(self):
+        # 다중 선택 지원
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "펌웨어 파일 선택 (여러 개 선택 가능)",
             os.path.expanduser("~/Downloads"),
             "Dell 펌웨어 (*.exe *.d7 *.EXE *.D7);;모든 파일 (*.*)"
         )
-        if not path:
+        if not paths:
             return
-        self.selected_file = path
-        self.file_input.setText(path)
-        size_mb = os.path.getsize(path) / (1024 * 1024)
-        self.file_info_lbl.setText(f"  파일: {os.path.basename(path)}   크기: {size_mb:.1f} MB")
-        self.next_btn.setEnabled(True)
+        # 중복 제거하며 추가
+        for p in paths:
+            if p not in self.selected_files:
+                self.selected_files.append(p)
+        self._refresh_list()
+
+    def _remove_selected(self):
+        for item in self.file_list.selectedItems():
+            path = item.data(Qt.UserRole)
+            if path in self.selected_files:
+                self.selected_files.remove(path)
+        self._refresh_list()
+
+    def _clear_all(self):
+        self.selected_files.clear()
+        self._refresh_list()
+
+    def _refresh_list(self):
+        from PySide6.QtWidgets import QListWidgetItem
+        self.file_list.clear()
+        total_mb = 0.0
+        for i, path in enumerate(self.selected_files, 1):
+            try:
+                mb = os.path.getsize(path) / (1024*1024)
+                total_mb += mb
+                text = f"  #{i}   {os.path.basename(path)}    ({mb:.1f} MB)"
+            except Exception:
+                text = f"  #{i}   {os.path.basename(path)}"
+            item = QListWidgetItem(text)
+            item.setData(Qt.UserRole, path)
+            item.setToolTip(path)
+            self.file_list.addItem(item)
+
+        count = len(self.selected_files)
+        if count == 0:
+            self.summary_lbl.setText("파일이 선택되지 않음")
+        else:
+            self.summary_lbl.setText(f"✅ 총 {count}개 파일 선택됨 · 총 크기: {total_mb:.1f} MB")
+        self.next_btn.setEnabled(count > 0)
 
     def _on_next(self):
         self.selected_apply = "Immediate" if self.rb_now.isChecked() else "OnReset"
@@ -2297,11 +2434,11 @@ class FirmwareSelectDialog(QDialog):
 
 
 class FirmwareConfirmDialog(QDialog):
-    """3단계 — 최종 확인 (UPDATE 타이핑 요구)"""
+    """3단계 — 최종 확인 (요약 표시 + 바로 시작)"""
     def __init__(self, parent=None, summary: dict = None):
         super().__init__(parent)
         self.setWindowTitle("최종 확인")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(600)
         summary = summary or {}
 
         layout = QVBoxLayout(self)
@@ -2311,73 +2448,97 @@ class FirmwareConfirmDialog(QDialog):
             "<div style='background:#FFF8E1; border-left:5px solid #E8A317; "
             "padding:12px 16px; color:#7A5A00;'>"
             "<b style='font-size:14px;'>🔒 마지막 확인</b><br>"
-            "<span style='font-size:11px;'>확인 후에는 되돌릴 수 없습니다.</span>"
+            "<span style='font-size:11px;'>[업데이트 시작] 클릭 후에는 되돌릴 수 없습니다.</span>"
             "</div>"
         )
         title.setTextFormat(Qt.RichText)
         layout.addWidget(title)
 
-        # 요약 정보
+        # 요약 정보 (파일 여러 개 지원)
+        files = summary.get("files", [])
+        if not files and summary.get("file"):
+            files = [summary["file"]]
+
+        files_html = ""
+        total_mb = 0.0
+        for i, f in enumerate(files, 1):
+            try:
+                mb = os.path.getsize(f) / (1024*1024)
+                total_mb += mb
+                files_html += (
+                    f"<tr>"
+                    f"<td style='color:#57606a; padding:3px 8px 3px 0;'>#{i}</td>"
+                    f"<td style='padding:3px 0;'><b>{html.escape(os.path.basename(f))}</b> "
+                    f"<span style='color:#8C959F; font-size:11px;'>({mb:.1f} MB)</span></td>"
+                    f"</tr>"
+                )
+            except Exception:
+                files_html += (
+                    f"<tr>"
+                    f"<td style='color:#57606a; padding:3px 8px 3px 0;'>#{i}</td>"
+                    f"<td><b>{html.escape(os.path.basename(f))}</b></td>"
+                    f"</tr>"
+                )
+
         sm = (
             f"<table cellpadding='6' style='font-size:12px;'>"
             f"<tr><td style='color:#57606a;'>대상 IP</td><td><b>{html.escape(summary.get('ip', '-'))}</b></td></tr>"
             f"<tr><td style='color:#57606a;'>Service Tag</td><td><b>{html.escape(summary.get('service_tag', '-'))}</b></td></tr>"
-            f"<tr><td style='color:#57606a;'>펌웨어 파일</td><td><b>{html.escape(os.path.basename(summary.get('file', '-')))}</b></td></tr>"
-            f"<tr><td style='color:#57606a;'>파일 크기</td><td><b>{summary.get('size_mb', 0):.1f} MB</b></td></tr>"
+            f"<tr valign='top'><td style='color:#57606a;'>펌웨어 파일 ({len(files)}개)</td>"
+            f"<td><table>{files_html}</table></td></tr>"
+            f"<tr><td style='color:#57606a;'>총 파일 크기</td><td><b>{total_mb:.1f} MB</b></td></tr>"
             f"<tr><td style='color:#57606a;'>적용 시점</td><td><b>{summary.get('apply', '-')}</b></td></tr>"
             f"</table>"
         )
         summary_lbl = QLabel(sm)
         summary_lbl.setTextFormat(Qt.RichText)
+        summary_lbl.setWordWrap(True)
         layout.addWidget(summary_lbl)
-
-        # UPDATE 타이핑
-        confirm_lbl = QLabel(
-            "<span style='color:#1f2328; font-size:12px;'>"
-            "계속하시려면 아래 칸에 <b><code>UPDATE</code></b> 를 대문자로 정확히 입력하세요:"
-            "</span>"
-        )
-        confirm_lbl.setTextFormat(Qt.RichText)
-        layout.addWidget(confirm_lbl)
-
-        self.confirm_input = QLineEdit()
-        self.confirm_input.setPlaceholderText("UPDATE")
-        self.confirm_input.textChanged.connect(self._check_input)
-        layout.addWidget(self.confirm_input)
 
         layout.addSpacing(6)
         btns = QHBoxLayout()
         btns.addStretch()
         self.cancel_btn = QPushButton("취소")
+        self.cancel_btn.setStyleSheet(
+            "QPushButton { background:transparent; color:#57606A; border:1px solid #D0D7DE; "
+            "border-radius:6px; padding:8px 20px; }"
+            "QPushButton:hover { background:#F6F8FA; }"
+        )
         self.cancel_btn.clicked.connect(self.reject)
         btns.addWidget(self.cancel_btn)
-        self.confirm_btn = QPushButton("업데이트 시작")
-        self.confirm_btn.setEnabled(False)
+        self.confirm_btn = QPushButton("🚀  업데이트 시작")
         self.confirm_btn.clicked.connect(self.accept)
         self.confirm_btn.setStyleSheet(
             "QPushButton { background:#D1242F; color:white; border:0; "
-            "border-radius:6px; padding:8px 24px; font-weight:700; }"
-            "QPushButton:hover:enabled { background:#B01824; }"
-            "QPushButton:disabled { background:#F0C0C0; color:#eef; }")
+            "border-radius:6px; padding:8px 28px; font-weight:700; }"
+            "QPushButton:hover { background:#B01824; }"
+            "QPushButton:pressed { background:#8E0F1B; }")
         btns.addWidget(self.confirm_btn)
         layout.addLayout(btns)
 
-    def _check_input(self, text):
-        self.confirm_btn.setEnabled(text.strip() == "UPDATE")
-
 
 class FirmwareProgressDialog(QDialog):
-    """진행률 다이얼로그 — 3단계(Verify → Upload → Install)"""
+    """진행률 다이얼로그 — 여러 파일 순차 처리 지원"""
     cancelled = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("펌웨어 업데이트 진행 중")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(600)
         self.setModal(True)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
+
+        # 파일 진행 표시 (N/M)
+        self.file_indicator = QLabel("")
+        self.file_indicator.setStyleSheet(
+            "background:#DDF4FF; color:#0550AE; padding:8px 14px; "
+            "border-radius:6px; font-size:12px; font-weight:600;"
+        )
+        self.file_indicator.setTextFormat(Qt.RichText)
+        self.file_indicator.hide()  # 최초 hidden
+        layout.addWidget(self.file_indicator)
 
         self.stage_label = QLabel("준비 중...")
         self.stage_label.setStyleSheet("font-size:14px; font-weight:600; color:#1f2328;")
@@ -2414,6 +2575,16 @@ class FirmwareProgressDialog(QDialog):
         self.cancel_btn.clicked.connect(self._on_cancel)
         btns.addWidget(self.cancel_btn)
         layout.addLayout(btns)
+
+    def set_file_progress(self, current: int, total: int, filename: str):
+        """N번째 파일 시작 알림"""
+        if total > 1:
+            self.file_indicator.setText(
+                f"📁 파일 {current} / {total} &nbsp;&nbsp; <b>{html.escape(filename)}</b>"
+            )
+            self.file_indicator.show()
+        else:
+            self.file_indicator.hide()
 
     def _on_cancel(self):
         self.cancelled.emit()
@@ -3915,20 +4086,21 @@ class MainWindow(QMainWindow):
         if safety.exec() != QDialog.Accepted:
             return
 
-        # STEP 2: 파일 선택 + 적용 시점
+        # STEP 2: 파일 선택(다중) + 적용 시점
         st = (self.last_payload or {}).get("service_tag", "-")
         target_info = {"ip": ip, "service_tag": st}
         select = FirmwareSelectDialog(self, target_info=target_info)
         if select.exec() != QDialog.Accepted:
             return
-        file_path = select.selected_file
+        file_paths = select.selected_files  # 리스트
         apply_time = select.selected_apply
+        if not file_paths:
+            return
 
-        # STEP 3: 최종 확인 (UPDATE 타이핑)
-        size_mb = os.path.getsize(file_path) / (1024*1024)
+        # STEP 3: 최종 확인 (UPDATE 타이핑 없음)
         summary = {
             "ip": ip, "service_tag": st,
-            "file": file_path, "size_mb": size_mb,
+            "files": file_paths,
             "apply": "즉시 적용 (자동 재부팅 발생)" if apply_time == "Immediate"
                      else "다음 재부팅 시 적용 (안전)",
         }
@@ -3939,8 +4111,9 @@ class MainWindow(QMainWindow):
         # STEP 4: 진행률 다이얼로그 + Worker 시작
         self.fw_progress_dlg = FirmwareProgressDialog(self)
 
-        self.fw_worker = FirmwareUpdateWorker(ip, user, pw, file_path, apply_time)
+        self.fw_worker = FirmwareUpdateWorker(ip, user, pw, file_paths, apply_time)
         self.fw_worker.stage.connect(self.fw_progress_dlg.set_stage)
+        self.fw_worker.file_progress.connect(self.fw_progress_dlg.set_file_progress)
         self.fw_worker.upload_progress.connect(self.fw_progress_dlg.set_upload_progress)
         self.fw_worker.install_progress.connect(self.fw_progress_dlg.set_install_progress)
         self.fw_worker.finished_ok.connect(self._on_fw_done)
@@ -3951,20 +4124,54 @@ class MainWindow(QMainWindow):
         self.fw_worker.start()
         self.fw_progress_dlg.exec()
 
-    def _on_fw_done(self, result: dict):
+    def _on_fw_done(self, payload: dict):
         self.fw_progress_dlg.close()
         self.fw_btn.setEnabled(True)
+
+        total = payload.get("total", 1)
+        success = payload.get("success_count", 0)
+        fail = payload.get("fail_count", 0)
+        results = payload.get("results", [])
+        errors = payload.get("errors", [])
+
+        # 결과 요약
+        if fail == 0:
+            title = "✅ 업데이트 완료"
+            icon = QMessageBox.Information
+            summary = f"펌웨어 {success}/{total}개 성공적으로 업데이트되었습니다.\n"
+        elif success == 0:
+            title = "❌ 업데이트 실패"
+            icon = QMessageBox.Critical
+            summary = f"모든 파일 업데이트 실패 ({fail}/{total}).\n"
+        else:
+            title = "⚠️ 부분 성공"
+            icon = QMessageBox.Warning
+            summary = f"성공 {success}개 / 실패 {fail}개 (총 {total}개).\n"
+
+        # 성공 목록
+        success_list = ""
+        if results:
+            success_list = "\n\n✅ 성공한 파일:\n"
+            for r in results:
+                fname = os.path.basename(r.get("file", "-"))
+                success_list += f"  • {fname} — {r.get('final_state', 'OK')}\n"
+
+        # 실패 목록
+        fail_list = ""
+        if errors:
+            fail_list = "\n\n❌ 실패한 파일:\n" + "\n".join(errors[:5])
+
+        # 재부팅 안내
         reboot_msg = ""
-        if result.get("reboot_pending"):
-            reboot_msg = ("\n\n📌 <b>다음 재부팅 시</b>에 자동으로 적용됩니다.\n"
-                         "관리 대상 서버가 재부팅될 때까지 새 펌웨어는 활성화되지 않습니다.")
-        QMessageBox.information(
-            self, "업데이트 완료",
-            f"펌웨어 업데이트가 성공적으로 완료되었습니다.\n\n"
-            f"최종 상태: {result.get('final_state', 'Completed')}\n"
-            f"Job URI: {result.get('job_uri', '-')}\n"
-            f"메시지: {result.get('message', '')}{reboot_msg}"
-        )
+        if payload.get("reboot_pending"):
+            reboot_msg = ("\n\n📌 다음 재부팅 시 자동 적용됩니다.\n"
+                          "관리 대상 서버가 재부팅될 때까지 새 펌웨어는 활성화되지 않습니다.")
+
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setIcon(icon)
+        box.setText(summary + success_list + fail_list + reboot_msg)
+        box.exec()
 
     # ============================================================
     # ❓ 문의
