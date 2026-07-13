@@ -123,6 +123,203 @@ class InspectorError(Exception):
     pass
 
 
+# (예외 → 한국어 메시지 변환은 아래 friendly_error() / show_error_dialog() 사용)
+
+
+# =========================================================
+#  예외 → 사용자 친화적 한글 메시지 변환
+# =========================================================
+def friendly_error(exception, context: str = "", ip: str = "") -> Tuple[str, str, str]:
+    """예외를 (제목, 사용자 메시지, 상세 traceback) 튜플로 변환.
+
+    Returns:
+        title: 다이얼로그 창 제목
+        message: 사용자에게 보여줄 원인/해결책 (한글, 여러 줄)
+        detail: 개발자용 traceback (자세히 보기 용)
+    """
+    import traceback as tb_mod
+
+    # 상세 traceback (항상 준비)
+    if isinstance(exception, BaseException):
+        detail = "".join(tb_mod.format_exception(type(exception), exception, exception.__traceback__))
+    else:
+        detail = str(exception)
+
+    # 컨텍스트 (어느 작업에서 났는지)
+    ctx = f"[{context}] " if context else ""
+
+    # ─── requests 라이브러리 예외 ───
+    try:
+        import requests as _req
+        # 연결 타임아웃
+        if isinstance(exception, _req.exceptions.ConnectTimeout):
+            return (
+                "🔌 iDRAC 연결 시간 초과",
+                f"{ctx}iDRAC 서버({ip or '입력한 IP'})에 60초 안에 응답이 없습니다.\n\n"
+                "가능한 원인:\n"
+                "  • iDRAC 이 꺼져있거나 재부팅 중\n"
+                "  • 네트워크 / 방화벽 차단\n"
+                "  • IP 주소가 잘못됨\n"
+                "  • VPN 미연결\n\n"
+                f"👉 브라우저로 https://{ip or '(IP)'} 접속되는지 먼저 확인해 주세요.",
+                detail,
+            )
+        # 읽기 타임아웃 (연결은 되었으나 응답이 늦음)
+        if isinstance(exception, _req.exceptions.ReadTimeout):
+            return (
+                "⏳ iDRAC 응답 시간 초과",
+                f"{ctx}iDRAC 이 연결은 되었지만 응답이 늦어 대기 중단됐습니다.\n\n"
+                "가능한 원인:\n"
+                "  • iDRAC 이 다른 작업으로 바쁨 (펌웨어 업데이트, 대량 조회)\n"
+                "  • iDRAC 자체 성능 저하\n\n"
+                "👉 1~2분 기다린 후 다시 시도해 주세요.",
+                detail,
+            )
+        # 연결 자체 실패
+        if isinstance(exception, _req.exceptions.ConnectionError):
+            return (
+                "🌐 네트워크 연결 실패",
+                f"{ctx}iDRAC ({ip or '입력한 IP'})에 접근할 수 없습니다.\n\n"
+                "가능한 원인:\n"
+                "  • IP 주소가 잘못됨\n"
+                "  • 네트워크 케이블 분리 / Wi-Fi 끊김\n"
+                "  • 방화벽이 443 포트를 차단\n"
+                "  • VPN 미연결 (사내망 접근이 필요할 수 있음)\n\n"
+                f"👉 ping {ip or '(IP)'} 로 먼저 통신 확인 후 다시 시도해 주세요.",
+                detail,
+            )
+        # SSL 오류
+        if isinstance(exception, _req.exceptions.SSLError):
+            return (
+                "🔒 SSL 인증서 오류",
+                f"{ctx}iDRAC 의 SSL 인증서를 검증하는 데 실패했습니다.\n\n"
+                "(이 앱은 원래 SSL 검증을 건너뛰지만, 어떤 이유로 검증이 활성화된 상태입니다)\n\n"
+                "👉 이 오류가 지속되면 문의 버튼으로 알려주세요.",
+                detail,
+            )
+    except ImportError:
+        pass
+
+    # ─── InspectorError (앱 내부 던진 것) ───
+    if isinstance(exception, InspectorError):
+        msg = str(exception)
+        # 인증 실패
+        if msg == "AUTH" or "401" in msg or "인증" in msg:
+            return (
+                "🔑 인증 실패",
+                f"{ctx}사용자명 또는 비밀번호가 잘못됐습니다.\n\n"
+                "확인 사항:\n"
+                "  • Username 정확한지 (대소문자 구분)\n"
+                "  • Password 정확한지 (한글/특수문자 포함 가능)\n"
+                "  • iDRAC 계정이 잠긴 상태 아닌지\n\n"
+                "👉 iDRAC 웹 UI 에서 같은 계정으로 로그인 되는지 확인해 주세요.",
+                detail,
+            )
+        # 서버 응답 오류 (HTTP 4xx/5xx)
+        if "HTTP 404" in msg:
+            return (
+                "❓ API 경로를 찾을 수 없음",
+                f"{ctx}iDRAC 이 요청한 API 경로를 지원하지 않습니다.\n\n"
+                "가능한 원인:\n"
+                "  • iDRAC 펌웨어가 너무 오래됨 (Redfish 미지원)\n"
+                "  • 해당 기능이 이 iDRAC 버전에서는 없음\n\n"
+                f"자세한 정보:\n{msg}",
+                detail,
+            )
+        if "HTTP 503" in msg:
+            return (
+                "🔴 iDRAC 일시 사용 불가",
+                f"{ctx}iDRAC 이 일시적으로 응답 불가 상태입니다.\n\n"
+                "가능한 원인:\n"
+                "  • iDRAC 이 재부팅 중이거나 부팅 완료 대기 중\n"
+                "  • iDRAC 자체 펌웨어 업데이트 중\n"
+                "  • 너무 많은 요청으로 인한 과부하\n\n"
+                "👉 1~3분 기다린 후 다시 시도해 주세요.",
+                detail,
+            )
+        if "HTTP 500" in msg:
+            return (
+                "⚠️ iDRAC 내부 오류",
+                f"{ctx}iDRAC 서버 자체에서 오류가 발생했습니다.\n\n"
+                "가능한 원인:\n"
+                "  • iDRAC 이 불안정한 상태\n"
+                "  • 하드웨어 상태 이상\n\n"
+                "👉 iDRAC 재시작 (호스트 OS 는 영향 없음) 후 다시 시도해 보세요.",
+                detail,
+            )
+        if "진행 중" in msg or "Job" in msg:
+            return (
+                "⏳ 진행 중인 Job 이 있음",
+                f"{ctx}iDRAC 에 이미 진행 중인 작업이 있어 시작할 수 없습니다.\n\n"
+                "👉 진행 중인 작업이 끝나거나 실패할 때까지 기다린 후 다시 시도해 주세요.\n"
+                "   (iDRAC 웹 UI → Maintenance → Job Queue 에서 확인 가능)\n\n"
+                f"자세히:\n{msg}",
+                detail,
+            )
+        # 기타 InspectorError
+        return (
+            "⚠️ iDRAC 응답 오류",
+            f"{ctx}{msg}",
+            detail,
+        )
+
+    # ─── 파일 관련 예외 ───
+    if isinstance(exception, FileNotFoundError):
+        return (
+            "📁 파일을 찾을 수 없음",
+            f"{ctx}요청한 파일이 존재하지 않거나 삭제됐습니다.\n\n"
+            f"경로: {exception.filename or ''}",
+            detail,
+        )
+    if isinstance(exception, PermissionError):
+        return (
+            "🔒 파일 접근 권한 없음",
+            f"{ctx}파일을 읽거나 쓸 수 있는 권한이 없습니다.\n\n"
+            f"경로: {exception.filename or ''}\n\n"
+            "👉 다른 폴더에 저장하거나 관리자 권한으로 다시 시도해 주세요.",
+            detail,
+        )
+    if isinstance(exception, OSError):
+        # 디스크 가득참 등
+        return (
+            "💾 파일 시스템 오류",
+            f"{ctx}디스크 여유 공간이 부족하거나 파일 시스템 문제가 있습니다.\n\n{exception}",
+            detail,
+        )
+
+    # ─── 그 외 (한 줄 요약만) ───
+    ex_type = type(exception).__name__
+    ex_msg = str(exception)[:200]
+    return (
+        "❗ 예상치 못한 오류",
+        f"{ctx}처리 중 예상하지 못한 문제가 발생했습니다.\n\n"
+        f"[{ex_type}] {ex_msg}\n\n"
+        "👉 아래 '자세히' 버튼을 눌러 상세 내용을 확인하시고,\n"
+        "   반복되면 [❓ 문의] 로 로그를 남겨주세요.",
+        detail,
+    )
+
+
+def show_error_dialog(parent, exception_or_tuple, context: str = "", ip: str = ""):
+    """친절한 한글 에러 다이얼로그. 예외 객체 또는 (title, msg, detail) 튜플 지원.
+       'Show Details' 로 traceback 확장 가능.
+    """
+    if isinstance(exception_or_tuple, tuple) and len(exception_or_tuple) == 3:
+        title, message, detail = exception_or_tuple
+    else:
+        title, message, detail = friendly_error(exception_or_tuple, context, ip)
+
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setIcon(QMessageBox.Warning)
+    box.setText(message)
+    if detail:
+        box.setDetailedText(detail)
+    # 최소 폭 설정 (Show Details 눌렀을 때 잘 보이도록)
+    box.setStyleSheet("QLabel{min-width: 480px;}")
+    box.exec()
+
+
 class Inspector:
     """elgfw.py 로직을 옮긴 핵심 조회 클래스. UI 와 분리."""
 
@@ -190,7 +387,8 @@ class Inspector:
         return self._get("/redfish/v1/UpdateService")
 
     def check_update_ready(self) -> Tuple[bool, str]:
-        """iDRAC 상태 검증 — 진행 중 Job 있는지, 정상 상태인지"""
+        """iDRAC 상태 검증 — 진행 중 Job 있는지, 정상 상태인지.
+           네트워크 에러 등은 InspectorError 로 감싸서 상위에서 friendly_error 로 처리되게 함."""
         try:
             # 진행 중인 Job 확인
             jobs = self._get("/redfish/v1/Managers/iDRAC.Embedded.1/Oem/Dell/Jobs")
@@ -206,8 +404,13 @@ class Inspector:
             if running:
                 return False, "진행 중인 Job 이 있습니다:\n  " + "\n  ".join(running)
             return True, "OK"
-        except InspectorError as e:
-            return True, f"(상태 확인 실패, 계속 진행 가능: {e})"
+        except InspectorError:
+            # HTTP 404 등: 이 iDRAC 이 Dell OEM 경로를 지원 안 함 → 계속 진행
+            return True, "(Dell Jobs 경로 확인 불가, 계속 진행)"
+        except requests.exceptions.RequestException as e:
+            # 네트워크 오류 (timeout, connection error 등)는 상위로 던져서
+            # friendly_error 가 사용자 친화 메시지로 변환하도록
+            raise
 
     def _extract_error_detail(self, r) -> str:
         """iDRAC Redfish 에러 응답에서 상세 사유 추출"""
@@ -1913,19 +2116,9 @@ class FetchWorker(QThread):
                 out["bios"] = insp.fetch_bios()
             self.finished_ok.emit(out)
 
-        except InspectorError as e:
-            if str(e) == "AUTH":
-                self.failed.emit("AUTH", "인증 실패 — 사용자/비밀번호를 확인해 주세요.")
-            else:
-                self.failed.emit("HTTP", f"서버 응답 오류: {e}")
-        except requests.exceptions.ConnectTimeout:
-            self.failed.emit("TIMEOUT", "연결 시간 초과 — iDRAC IP/네트워크를 확인해 주세요.")
-        except requests.exceptions.ConnectionError as e:
-            self.failed.emit("NETWORK", f"네트워크 오류 — iDRAC IP({self.ip})에 접근할 수 없습니다.\n{e.__class__.__name__}")
-        except requests.exceptions.RequestException as e:
-            self.failed.emit("REQ", f"요청 오류: {e}")
         except Exception as e:
-            self.failed.emit("UNK", f"예상치 못한 오류:\n{traceback.format_exc()}")
+            title, msg, det = friendly_error(e, context="서버 정보 조회", ip=self.ip)
+            self.failed.emit(title, msg + "\n\n---\n[개발자용 상세]\n" + det[:1500])
 
 
 # =========================================================
@@ -1974,17 +2167,9 @@ class LogFetchWorker(QThread):
                     self.progress.emit(min(skip, total), total, lt, name)
                 out[lt] = entries
             self.finished_ok.emit(out)
-        except InspectorError as e:
-            if str(e) == "AUTH":
-                self.failed.emit("AUTH", "인증 실패 — 사용자/비밀번호를 확인해 주세요.")
-            else:
-                self.failed.emit("HTTP", f"서버 응답 오류: {e}")
-        except requests.exceptions.ConnectTimeout:
-            self.failed.emit("TIMEOUT", "연결 시간 초과 — iDRAC IP/네트워크를 확인해 주세요.")
-        except requests.exceptions.ConnectionError as e:
-            self.failed.emit("NETWORK", f"네트워크 오류 — iDRAC IP({self.ip})에 접근할 수 없습니다.")
         except Exception as e:
-            self.failed.emit("UNK", f"예상치 못한 오류:\n{traceback.format_exc()}")
+            title, msg, det = friendly_error(e, context="로그 추출", ip=self.ip)
+            self.failed.emit(title, msg + "\n\n---\n[개발자용 상세]\n" + det[:1500])
 
 
 # =========================================================
@@ -2184,7 +2369,8 @@ class FirmwareUpdateWorker(QThread):
                 })
 
         except Exception as e:
-            self.failed.emit("UNK", f"예상치 못한 오류:\n{traceback.format_exc()}")
+            title, msg, det = friendly_error(e, context="펌웨어 업데이트", ip=self.ip)
+            self.failed.emit(title, msg + "\n\n---\n[개발자용 상세]\n" + det[:1500])
 
 
 class FirmwareSafetyDialog(QDialog):
@@ -3650,14 +3836,15 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
         self.status.showMessage("완료 ✓", 5000)
 
-    def _on_fail(self, kind: str, msg: str):
+    def _on_fail(self, title: str, msg: str):
         self._set_busy(False)
-        self.status.showMessage(f"실패 ({kind})", 8000)
-        title = {"AUTH": "인증 실패",
-                 "TIMEOUT": "연결 시간 초과",
-                 "NETWORK": "네트워크 오류",
-                 "HTTP": "서버 응답 오류"}.get(kind, "오류")
-        QMessageBox.critical(self, title, msg)
+        self.status.showMessage(f"실패", 8000)
+        # 새 포맷: title 은 이미 한글로 정제됨, msg 안에 상세 traceback 포함
+        # 상세 부분 분리
+        user_msg, detail = msg, ""
+        if "\n---\n[개발자용 상세]\n" in msg:
+            user_msg, detail = msg.split("\n---\n[개발자용 상세]\n", 1)
+        show_error_dialog(self, (title, user_msg, detail))
 
     def _set_busy(self, busy):
         for w in (self.run_btn, self.sample_btn, self.ip_in, self.user_in, self.pw_in,
@@ -3962,13 +4149,13 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "저장 실패", f"{e}\n\n{traceback.format_exc()}")
 
-    def _on_log_fail(self, kind: str, msg: str):
+    def _on_log_fail(self, title: str, msg: str):
         if hasattr(self, 'log_progress_dlg'):
             self.log_progress_dlg.close()
-        # (setEnabled 관리 제거)
-        title = {"AUTH": "인증 실패", "TIMEOUT": "연결 시간 초과",
-                 "NETWORK": "네트워크 오류", "HTTP": "서버 응답 오류"}.get(kind, "오류")
-        QMessageBox.critical(self, title, msg)
+        user_msg, detail = msg, ""
+        if "\n---\n[개발자용 상세]\n" in msg:
+            user_msg, detail = msg.split("\n---\n[개발자용 상세]\n", 1)
+        show_error_dialog(self, (title, user_msg, detail))
 
     def _save_logs_xlsx(self, path: str, payload: dict, service_tag: str):
         """추출된 로그를 색상 있는 엑셀로 저장 (로그 종류별 시트)"""
@@ -4145,17 +4332,13 @@ class MainWindow(QMainWindow):
         dlg = ContactDialog(self)
         dlg.exec()
 
-    def _on_fw_fail(self, kind: str, msg: str):
+    def _on_fw_fail(self, title: str, msg: str):
         if hasattr(self, 'fw_progress_dlg'):
             self.fw_progress_dlg.close()
-        # (setEnabled 관리 제거 - 항상 활성화 유지)
-        title = {
-            "AUTH": "인증 실패", "TIMEOUT": "시간 초과",
-            "NETWORK": "네트워크 오류", "UPLOAD": "업로드 실패",
-            "JOB": "Job 실패", "BUSY": "iDRAC 사용 중",
-            "CANCEL": "취소됨",
-        }.get(kind, "오류")
-        QMessageBox.critical(self, title, msg)
+        user_msg, detail = msg, ""
+        if "\n---\n[개발자용 상세]\n" in msg:
+            user_msg, detail = msg.split("\n---\n[개발자용 상세]\n", 1)
+        show_error_dialog(self, (title, user_msg, detail))
 
     def _save_logs_csv(self, path: str, payload: dict, service_tag: str):
         """CSV로 저장 (로그 종류별 별도 파일은 안 함, 하나에 모두)"""
