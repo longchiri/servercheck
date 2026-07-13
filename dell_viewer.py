@@ -4186,6 +4186,12 @@ def main():
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("longchiri")
 
+    # ✅ Fusion 스타일 강제 — 크로스 플랫폼 100% 동일 렌더링 보장
+    # macOS/Windows 모두에서 체크박스가 확실하게 파란 배경 + 흰 체크마크로 표시됨
+    from PySide6.QtWidgets import QStyleFactory
+    if "Fusion" in QStyleFactory.keys():
+        app.setStyle("Fusion")
+
     # 앱 아이콘 (Dock/Taskbar 까지 적용)
     icon_path = resource_path("iDRAC_Viewer.icns") or resource_path("iDRAC_Viewer.png") or resource_path("iDRAC_Viewer.ico")
     if icon_path:
