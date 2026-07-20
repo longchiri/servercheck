@@ -459,16 +459,22 @@ class Inspector:
         if not multipart_uri:
             multipart_uri = "/redfish/v1/UpdateService/MultipartUpload"
 
-        filename = os.path.basename(file_path)
+        import re
+        raw_filename = os.path.basename(file_path)
+        # 파일명 정리: 공백/특수문자 → 언더스코어 (Dell iDRAC 이 특수문자에 민감함)
+        # 확장자는 유지 (.exe, .d7 등)
+        base, ext = os.path.splitext(raw_filename)
+        safe_base = re.sub(r'[^\w.-]', '_', base)
+        filename = safe_base + ext.lower()
 
         # ============================================================
         # 방식 1: MultipartHttpPushUri (Redfish 표준, 권장)
         # ============================================================
         upload_url = self._url(multipart_uri) if multipart_uri.startswith("/") else multipart_uri
 
-        # ⚠️ Dell 공식 예제와 정확히 일치하도록:
-        # - UpdateParameters 파트의 파일명 = None (Dell iDRAC 이 파일명 있으면 거부)
-        # - UpdateFile 파트의 Content-Type = "multipart/form-data" (Dell 명세)
+        # ⚠️ Redfish DSP0266 표준 준수:
+        # - UpdateParameters: 파일명 없음(None), application/json
+        # - UpdateFile: 파일명 있음(sanitize된), application/octet-stream (표준)
         params = {
             "Targets": [],
             "@Redfish.OperationApplyTime": apply_time,
@@ -482,7 +488,7 @@ class Inspector:
             encoder = MultipartEncoder(
                 fields={
                     "UpdateParameters": (None, json.dumps(params), "application/json"),
-                    "UpdateFile": (filename, file_handle, "multipart/form-data"),
+                    "UpdateFile": (filename, file_handle, "application/octet-stream"),
                 }
             )
 
@@ -535,6 +541,62 @@ class Inspector:
                 pass
 
         # ============================================================
+        # 방식 1-B: requests.post(files=) — Dell 공식 예제와 100% 동일 방식
+        # (MultipartEncoder 대신 requests 표준 API 사용, progress 없음)
+        # ============================================================
+        try:
+            with open(file_path, "rb") as fh:
+                files = {
+                    "UpdateParameters": (None, json.dumps(params), "application/json"),
+                    "UpdateFile": (filename, fh, "application/octet-stream"),
+                }
+                # 파일 크기 진행률 (한 번에 완료로 표시)
+                if progress_callback:
+                    fsize = os.path.getsize(file_path)
+                    progress_callback(0, fsize)
+
+                r_b = requests.post(
+                    upload_url,
+                    files=files,
+                    headers={
+                        "Authorization": self.session.headers["Authorization"],
+                        "Accept": "application/json",
+                    },
+                    verify=False,
+                    timeout=1800,
+                )
+
+                if progress_callback:
+                    fsize = os.path.getsize(file_path)
+                    progress_callback(fsize, fsize)
+
+                if r_b.status_code in (200, 201, 202):
+                    task_uri = r_b.headers.get("Location", "")
+                    if not task_uri:
+                        try:
+                            body = r_b.json()
+                            task_uri = (body.get("@odata.id")
+                                        or body.get("TaskMonitor")
+                                        or body.get("Id", ""))
+                        except Exception:
+                            pass
+                    if task_uri:
+                        return task_uri
+                    else:
+                        raise InspectorError("업로드 성공했지만 Job/Task URI를 못 찾음")
+
+                # 방식 1-B 도 실패
+                multipart_error += (
+                    f"\n\n[방식 1-B requests.post(files=) 도 실패]\n"
+                    f"HTTP {r_b.status_code}\n"
+                    f"응답:{self._extract_error_detail(r_b)}"
+                )
+        except InspectorError:
+            raise
+        except Exception as e:
+            multipart_error += f"\n\n[방식 1-B 예외] {e}"
+
+        # ============================================================
         # 방식 2: HttpPushUri 폴백 (iDRAC 8 또는 구형 iDRAC 9)
         # ============================================================
         if http_push_uri:
@@ -554,8 +616,9 @@ class Inspector:
                 with open(file_path, "rb") as f:
                     file_bytes = f.read()
 
+                # Redfish 표준: HttpPushUri 는 application/octet-stream
                 headers = {
-                    "Content-Type": "multipart/form-data",
+                    "Content-Type": "application/octet-stream",
                     "Authorization": self.session.headers["Authorization"],
                     "Accept": "application/json",
                 }
