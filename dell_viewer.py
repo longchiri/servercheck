@@ -113,7 +113,7 @@ except Exception:
 
 
 APP_NAME = "iDRAC Toolkit"
-APP_VERSION = "3.2.0"
+APP_VERSION = "3.3.0"
 ISSUES_URL = "https://github.com/longchiri/servercheck/issues/new"
 
 # =========================================================
@@ -121,6 +121,31 @@ ISSUES_URL = "https://github.com/longchiri/servercheck/issues/new"
 # =========================================================
 class InspectorError(Exception):
     pass
+
+
+def nic_location_label(adapter_id: str, phys_port) -> str:
+    """NIC 위치를 사람이 읽기 쉽게 변환
+    'NIC.Slot.6' + '1' → 'PCIe 슬롯 6 · 포트 1'
+    'NIC.Integrated.1' + '2' → 'Integrated NIC 1 · 포트 2' (rNDC/LOM)
+    'NIC.Embedded.1' + '1' → 'Embedded NIC 1 · 포트 1'
+    'NIC.Mezzanine.1B' + '1' → 'Mezzanine 카드 1B · 포트 1'
+    """
+    aid = adapter_id or ""
+    port_s = f" · 포트 {phys_port}" if phys_port else ""
+
+    if "Slot." in aid:
+        num = aid.split("Slot.")[-1]
+        return f"PCIe 슬롯 {num}{port_s}"
+    if "Integrated." in aid:
+        num = aid.split("Integrated.")[-1]
+        return f"Integrated NIC {num} (rNDC/LOM){port_s}"
+    if "Embedded." in aid:
+        num = aid.split("Embedded.")[-1]
+        return f"Embedded NIC {num}{port_s}"
+    if "Mezzanine." in aid:
+        num = aid.split("Mezzanine.")[-1]
+        return f"Mezzanine 카드 {num}{port_s}"
+    return f"{aid}{port_s}"
 
 
 # (예외 → 한국어 메시지 변환은 아래 friendly_error() / show_error_dialog() 사용)
@@ -855,7 +880,7 @@ class Inspector:
         result["psu_summary"] = psu_summary
         result["psus"] = psus
 
-        # NIC (간단 정보)
+        # NIC — 슬롯/포트 명확히 파싱 + MAC / 링크 속도 포함
         nics = []
         try:
             nl = self._get("/redfish/v1/Chassis/System.Embedded.1/NetworkAdapters")
@@ -863,16 +888,35 @@ class Inspector:
                 ad = self._get(m["@odata.id"])
                 model = ad.get("Model") or ad.get("Name", "N/A")
                 aid = ad.get("Id", "N/A")
+                # aid 예: "NIC.Slot.6" / "NIC.Integrated.1" / "NIC.Embedded.1" / "NIC.Mezzanine.1"
                 for c in ad.get("Controllers", []):
                     ports = c.get("Links", {}).get("NetworkPorts", [])
                     for p in ports:
                         try:
                             pd = self._get(p["@odata.id"])
+                            port_id = pd.get("Id", "N/A")
+                            # port_id 예: "NIC.Slot.6-1" 또는 "NIC.Integrated.1-1-1"
+                            # 하이픈 뒤 첫 숫자가 물리 포트 번호
+                            phys_port = pd.get("PhysicalPortNumber")
+                            if not phys_port and "-" in port_id:
+                                try:
+                                    phys_port = port_id.split("-")[1]
+                                except Exception:
+                                    phys_port = ""
+                            # MAC 주소들
+                            macs = pd.get("AssociatedNetworkAddresses", []) or []
+                            mac = macs[0] if macs else ""
+                            # 링크 속도
+                            speed_mbps = pd.get("CurrentLinkSpeedMbps") or pd.get("SupportedLinkCapabilities", [{}])[0].get("LinkSpeedMbps", "")
                             nics.append({
                                 "Adapter": aid,
                                 "Model": model,
-                                "Port": pd.get("Id", "N/A"),
+                                "Port": port_id,           # 원본 ID (하위호환)
+                                "PhysPort": str(phys_port) if phys_port else "",
                                 "LinkStatus": pd.get("LinkStatus", "N/A"),
+                                "Mac": mac,
+                                "SpeedMbps": speed_mbps,
+                                "Location": nic_location_label(aid, phys_port),
                             })
                         except InspectorError:
                             pass
@@ -1034,8 +1078,24 @@ def sample_payload(kind: str) -> dict:
             "psu_summary": {"Count": 2, "TotalCapacityW": 2400, "Health": "OK", "Redundancy": "OK"},
             "psus": [{"Name": "PS1", "CapacityW": 1200, "Health": "OK"},
                      {"Name": "PS2", "CapacityW": 1200, "Health": "OK"}],
-            "nics": [{"Adapter": "NIC.Integrated.1", "Model": "Broadcom 5720", "Port": "1", "LinkStatus": "Up"},
-                     {"Adapter": "NIC.Integrated.1", "Model": "Broadcom 5720", "Port": "2", "LinkStatus": "Up"}],
+            "nics": [
+                {"Adapter": "NIC.Slot.1", "Model": "Intel(R) Ethernet 25G 2P E810-XXV",
+                 "Port": "NIC.Slot.1-1", "PhysPort": "1", "LinkStatus": "Up",
+                 "Mac": "B4:96:91:B2:12:0C", "SpeedMbps": 25000,
+                 "Location": "PCIe 슬롯 1 · 포트 1"},
+                {"Adapter": "NIC.Slot.1", "Model": "Intel(R) Ethernet 25G 2P E810-XXV",
+                 "Port": "NIC.Slot.1-2", "PhysPort": "2", "LinkStatus": "Up",
+                 "Mac": "B4:96:91:B2:12:0D", "SpeedMbps": 25000,
+                 "Location": "PCIe 슬롯 1 · 포트 2"},
+                {"Adapter": "NIC.Integrated.1", "Model": "Broadcom NetXtreme 5720",
+                 "Port": "NIC.Integrated.1-1-1", "PhysPort": "1", "LinkStatus": "Up",
+                 "Mac": "E4:43:4B:DE:6A:D0", "SpeedMbps": 1000,
+                 "Location": "Integrated NIC 1 (rNDC/LOM) · 포트 1"},
+                {"Adapter": "NIC.Integrated.1", "Model": "Broadcom NetXtreme 5720",
+                 "Port": "NIC.Integrated.1-2-1", "PhysPort": "2", "LinkStatus": "Down",
+                 "Mac": "E4:43:4B:DE:6A:D1", "SpeedMbps": 0,
+                 "Location": "Integrated NIC 1 (rNDC/LOM) · 포트 2"},
+            ],
         }
     if kind == "fw":
         all_components = [
@@ -1280,10 +1340,22 @@ def format_hw_html(data: dict) -> str:
 
     out += html_section("Network Adapters")
     if data.get("nics"):
-        out += '<div style="margin:0 0 0 8px; color:#444;">'
+        out += '<div style="margin:0 0 0 8px; color:#444; line-height:1.7;">'
         for n in data["nics"]:
-            out += (f'• {html.escape(n["Model"])} ({html.escape(n["Adapter"])}) '
-                    f'Port {n["Port"]} — {health_html(n["LinkStatus"])}<br>')
+            loc = n.get("Location") or nic_location_label(n.get("Adapter", ""), n.get("PhysPort", ""))
+            mac = n.get("Mac", "")
+            speed = n.get("SpeedMbps", "")
+            extras = []
+            if speed:
+                extras.append(f"{speed} Mbps")
+            if mac:
+                extras.append(f"MAC {html.escape(str(mac))}")
+            extras_str = f" &nbsp;<span style='color:#8C959F; font-size:11px;'>({', '.join(extras)})</span>" if extras else ""
+            out += (
+                f'• <b style="color:#0969DA;">[{html.escape(loc)}]</b> '
+                f'{html.escape(str(n.get("Model", "N/A")))} — '
+                f'{health_html(n.get("LinkStatus", "N/A"))}{extras_str}<br>'
+            )
         out += '</div>'
     else:
         out += '<div style="color:#999; margin-left:8px;">(어댑터 없음)</div>'
@@ -1523,7 +1595,12 @@ def format_hw_text(data: dict) -> str:
 
     section("Network Adapters")
     for n in data.get("nics", []):
-        L.append(f"  - {n['Model']} ({n['Adapter']}) Port {n['Port']} — {n['LinkStatus']}")
+        loc = n.get("Location") or nic_location_label(n.get("Adapter", ""), n.get("PhysPort", ""))
+        extras = []
+        if n.get("SpeedMbps"): extras.append(f"{n['SpeedMbps']} Mbps")
+        if n.get("Mac"): extras.append(f"MAC {n['Mac']}")
+        extras_s = f"  [{', '.join(extras)}]" if extras else ""
+        L.append(f"  - [{loc}] {n.get('Model', 'N/A')} — {n.get('LinkStatus', 'N/A')}{extras_s}")
 
     return "\n".join(L)
 
@@ -1791,9 +1868,13 @@ def save_combined_xlsx(path: str, service_tag: str, payloads: dict,
 
         write_subsection_bar("Network Adapters"); gap()
         for n in hw.get("nics", []):
+            loc = n.get("Location") or nic_location_label(n.get("Adapter", ""), n.get("PhysPort", ""))
+            extras = []
+            if n.get("SpeedMbps"): extras.append(f"{n['SpeedMbps']} Mbps")
+            if n.get("Mac"): extras.append(f"MAC {n['Mac']}")
+            extras_s = f"  ({', '.join(extras)})" if extras else ""
             write_bullet(
-                f"Model: {n['Model']}, Adapter: {n['Adapter']}, "
-                f"Port: {n['Port']}, LinkStatus: {n['LinkStatus']}"
+                f"[{loc}] {n.get('Model', 'N/A')} — {n.get('LinkStatus', 'N/A')}{extras_s}"
             )
 
     # ===== FW =====
@@ -2053,9 +2134,13 @@ def save_to_xlsx(path: str, sheet_prefix: str, kind: str, payload: dict,
         write_subsection_bar("Network Adapters")
         gap()
         for n in payload.get("nics", []):
+            loc = n.get("Location") or nic_location_label(n.get("Adapter", ""), n.get("PhysPort", ""))
+            extras = []
+            if n.get("SpeedMbps"): extras.append(f"{n['SpeedMbps']} Mbps")
+            if n.get("Mac"): extras.append(f"MAC {n['Mac']}")
+            extras_s = f"  ({', '.join(extras)})" if extras else ""
             write_bullet(
-                f"Model: {n['Model']}, Adapter: {n['Adapter']}, "
-                f"Port: {n['Port']}, LinkStatus: {n['LinkStatus']}"
+                f"[{loc}] {n.get('Model', 'N/A')} — {n.get('LinkStatus', 'N/A')}{extras_s}"
             )
 
     # ===== FW =====
